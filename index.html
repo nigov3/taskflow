@@ -186,19 +186,19 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
 /* =====================================================================
-   ПОДКЛЮЧЕНИЕ К SUPABASE (серверная авторизация + общая база)
+   ПОДКЛЮЧЕНИЕ К  (серверная авторизация + общая база)
    ---------------------------------------------------------------------
-   1. Зарегистрируйтесь бесплатно на https://supabase.com и создайте проект.
+   1. Зарегистрируйтесь бесплатно на https://.com и создайте проект.
    2. В проекте: Settings -> API — скопируйте Project URL и anon public key.
    3. Вставьте их вместо XXX ниже. Всё — приложение само переключится
       в «командный режим»: вход по email/паролю, общие данные для всех.
    4. SQL-скрипт для создания таблиц и правил доступа лежит в файле
-      supabase-schema.sql (вкладка SQL Editor в Supabase).
+      -schema.sql (вкладка SQL Editor в ).
    Пока строки не заменены — работает локальный режим (данные в браузере).
    ===================================================================== */
-const SUPABASE_URL = 'XXX';      // например: 'https://abcdefgh.supabase.co'
-const SUPABASE_KEY = 'XXX';      // anon public key из Settings -> API
-const useSupabase = !!(window.supabase && SUPABASE_URL !== 'XXX' && SUPABASE_KEY !== 'XXX'
+const _URL = 'https://kuprepaapdmtmdzrhrsr.supabase.co';      // например: 'https://abcdefgh..co'
+const SUPABASE_KEY = 'sb_publishable_Cq96flz1UZC-Yb371EcMDg_EMsgaItz';      // anon public key из Settings -> API
+const useSupabase = !!(window.supabase && SUPABASE_URL !== 'https://kuprepaapdmtmdzrhrsr.supabase.co' && SUPABASE_KEY !== 'sb_publishable_Cq96flz1UZC-Yb371EcMDg_EMsgaItz'
                        && /^https:\/\/.+/i.test(SUPABASE_URL));
 const sb = useSupabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
