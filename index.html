@@ -208,9 +208,9 @@ const { useState, useEffect, useMemo, useRef } = React;
       -schema.sql (вкладка SQL Editor в ).
    Пока строки не заменены — работает локальный режим (данные в браузере).
    ===================================================================== */
-const SUPABASE_URL = 'https://mtzemwarjzlzzkrhnoya.supabase.co';      // например: 'https://abcdefgh..co'
-const SUPABASE_KEY = 'sb_publishable_sc93NhYZ_BbWdyEa3XHphw_GbFZNYif';      // anon public key из Settings -> API
-const useSupabase = !!(window.supabase && SUPABASE_URL !== 'https://mtzemwarjzlzzkrhnoya.supabase.co' && SUPABASE_KEY !== 'sb_publishable_sc93NhYZ_BbWdyEa3XHphw_GbFZNYif'
+const SUPABASE_URL = 'https://qvukpmguecgtspzeclsp.supabase.co';      // например: 'https://abcdefgh..co'
+const SUPABASE_KEY = 'sb_publishable_IY6F02_9Cc2H3Mk8aRoWeQ_84M75Mee';      // anon public key из Settings -> API
+const useSupabase = !!(window.supabase && SUPABASE_URL !== 'https://qvukpmguecgtspzeclsp.supabase.co' && SUPABASE_KEY !== 'sb_publishable_IY6F02_9Cc2H3Mk8aRoWeQ_84M75Mee'
                        && /^https:\/\/.+/i.test(SUPABASE_URL));
 const sb = useSupabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
