@@ -332,11 +332,20 @@ function App() {
   const displayName = useSupabase
     ? (sbProfile ? sbProfile.name : (sbUser ? sbUser.email : ''))
     : (currentUser ? currentUser.name : '');
-  const loggedIn = useSupabase ? !!sbUser : !!currentUser;
+  // В командном режиме доступ «на замок»: данные видны только тем, кому
+  // владелец выдал роль (member/editor/owner). pending = ждёт одобрения.
+  const approved = useSupabase ? !!(sbProfile && ['owner', 'editor', 'member'].includes(sbProfile.role)) : true;
+  const isPending = useSupabase && !!sbProfile && sbProfile.role === 'pending';
+  const loggedIn = useSupabase ? (!!sbUser && approved) : !!currentUser;
+  // Писать общие данные могут владелец и редакторы (и в локальном режиме — только владелец).
+  const canEditTasks = useSupabase
+    ? !!(sbProfile && ['owner', 'editor'].includes(sbProfile.role))
+    : isOwner;
 
   // Загрузка общих данных + подписка на изменения (реальное время)
   useEffect(() => {
     let cancelled = false;
+    if (useSupabase && !loggedIn) return () => {}; // доступ не выдан — данные не грузим
     (async () => {
       const t = await loadShared('tf_tasks', []);
       const m = await loadShared('tf_members', DEFAULT_MEMBERS);
@@ -354,17 +363,17 @@ function App() {
       return () => { cancelled = true; sb.removeChannel(channel); };
     }
     return () => { cancelled = true; };
-  }, []);
+  }, [loggedIn]);
 
-  // Сохранение общих данных (в Supabase пишет только владелец — так решают RLS-политики)
+  // Сохранение общих данных (в Supabase пишет владелец/редактор — так решают RLS-политики)
   useEffect(() => {
     localStorage.setItem('tf_tasks', JSON.stringify(tasks));
-    if (sb && isOwner) saveShared('tf_tasks', tasks);
-  }, [tasks, isOwner]);
+    if (sb && canEditTasks) saveShared('tf_tasks', tasks);
+  }, [tasks, canEditTasks]);
   useEffect(() => {
     localStorage.setItem('tf_members', JSON.stringify(members));
-    if (sb && isOwner) saveShared('tf_members', members);
-  }, [members, isOwner]);
+    if (sb && canEditTasks) saveShared('tf_members', members);
+  }, [members, canEditTasks]);
 
   useEffect(() => { if (ownerAccount) localStorage.setItem('tf_owner', JSON.stringify(ownerAccount)); }, [ownerAccount]);
   // Миграция со старых схем: tf_admin -> tf_owner (сброс сессии, т.к. хеш теперь с новой солью),
@@ -386,24 +395,10 @@ function App() {
     async function fetchProfile(userId) {
       const { data: prof } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
       if (!mounted) return;
-      if (prof) {
-        setSbProfile(prof);
-      } else {
-        // Профиля ещё нет — создаём. Первый аккаунт становится владельцем,
-        // все остальные — сотрудниками. Это правило работает и на сервере
-        // (RLS-политика разрешает самостоятельное создание только с ролью member,
-        // поэтому обмануть его из браузера нельзя).
-        const { data: owners } = await sb.from('profiles').select('id').eq('role', 'owner').limit(1);
-        const role = (owners && owners.length > 0) ? 'member' : 'owner';
-        let attempt = await sb.from('profiles').insert({ id: userId, name: (userId || '').split('@')[0] || 'Участник', role }).select().maybeSingle();
-        if (attempt.error && role === 'owner') {
-          // Сервер отверг owner (уже есть владелец) — пробуем member
-          attempt = await sb.from('profiles').insert({ id: userId, name: (userId || '').split('@')[0] || 'Участник', role: 'member' }).select().maybeSingle();
-        }
-        const { data: finalProf } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
-        if (mounted) setSbProfile(finalProf || attempt.data || { id: userId, name: 'Участник', role: 'member' });
-      }
-      // Обновляем список профилей для панели «Доступ»
+      // Профиль создаёт серверный триггер при регистрации. Если его почему-то
+      // нет — считаем человека неодобренным (pending), доступ закрыт.
+      setSbProfile(prof || { id: userId, name: '', role: 'pending' });
+      // Обновляем список профилей для панели «Доступ» (виден только владельцу)
       const { data: all } = await sb.from('profiles').select('*');
       if (mounted && all) setProfiles(all);
       setSbReady(true);
@@ -458,10 +453,15 @@ function App() {
     setLoginError('');
     if (regName.trim().length < 2) { setLoginError('Укажите имя (минимум 2 символа)'); return; }
     if (loginPass.length < 6) { setLoginError('Пароль должен быть не короче 6 символов'); return; }
-    const { data, error } = await sb.auth.signUp({ email: loginName.trim(), password: loginPass });
+    const { data, error } = await sb.auth.signUp({
+      email: loginName.trim(),
+      password: loginPass,
+      options: { data: { name: regName.trim() } } // имя попадёт в профиль через триггер
+    });
     if (error) { setLoginError(error.message); return; }
-    // Профиль создастся автоматически при первом входе (см. fetchProfile).
-    // Если Supabase настроен без подтверждения email — пользователь уже вошёл.
+    // Профиль создаётся серверным триггером автоматически.
+    // Если Supabase настроен без подтверждения email — пользователь уже вошёл
+    // и увидит экран «доступ ещё не выдан».
     if (data.session) {
       setLoginOpen(false); setLoginName(''); setLoginPass(''); setRegName('');
     } else {
@@ -477,7 +477,8 @@ function App() {
 
   const changeUserRole = async (profileId, role) => {
     if (!requireAdmin('изменение роли доступа')) return;
-    await sb.from('profiles').update({ role }).eq('id', profileId);
+    const { error } = await sb.from('profiles').update({ role }).eq('id', profileId);
+    if (error) { alert('Сервер отклонил изменение роли: ' + error.message); return; }
     const { data } = await sb.from('profiles').select('*');
     if (data) setProfiles(data);
     // Если изменили роль самому себе — обновляем и свой профиль
@@ -487,13 +488,22 @@ function App() {
     }
   };
 
+  const removeProfile = async (profileId, name) => {
+    if (!requireAdmin('отзыв доступа')) return;
+    if (!confirm(`Отозвать доступ у «${name}»? Человек больше не сможет войти.`)) return;
+    const { error } = await sb.from('profiles').delete().eq('id', profileId);
+    if (error) { alert('Не удалось отозвать доступ: ' + error.message); return; }
+    const { data } = await sb.from('profiles').select('*');
+    if (data) setProfiles(data);
+  };
+
   const [profiles, setProfiles] = useState([]);
   useEffect(() => {
-    if (!sb || !sbUser) return;
+    if (!sb || !isOwner) return;
     let mounted = true;
     sb.from('profiles').select('*').then(({ data }) => { if (mounted && data) setProfiles(data); });
     return () => { mounted = false; };
-  }, [sbUser]);
+  }, [sbUser, isOwner]);
 
   const filtered = useMemo(() => tasks.filter(t => {
     if (filterAssignee && t.assignee !== filterAssignee) return false;
@@ -511,8 +521,6 @@ function App() {
     overdue: tasks.filter(t => t.deadline && t.status !== 'done' && isOverdue(t.deadline)).length,
     inProgress: tasks.filter(t => t.status === 'in_progress').length,
   }), [tasks]);
-
-  const canEditTasks = useSupabase ? (isOwner || (sbProfile && sbProfile.role === 'editor')) : isOwner;
 
   const saveTask = (task) => {
     if (useSupabase && !canEditTasks) { alert('Редактировать задачи могут только владелец и редакторы.'); return; }
@@ -584,11 +592,33 @@ function App() {
               <button className="btn-secondary btn-login" onClick={() => { setLoginError(''); setAuthMode('login'); setLoginOpen(true); }}>🔐 {useSupabase ? 'Войти' : 'Войти как владелец'}</button>
             )}
             <button className="btn-secondary" onClick={() => setShowTeam(!showTeam)}>👥 Команда</button>
-            {!useSupabase && isOwner && <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>}
-            {useSupabase && loggedIn && <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>}
+            {canEditTasks && <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>}
           </div>
         </div>
       </div>
+
+      {/* Доступ не выдан (режим Supabase): человек вошёл, но владелец ещё не одобрил */}
+      {useSupabase && sbReady && sbUser && !approved && (
+        <div className="modal-overlay" style={{zIndex: 70}}>
+          <div className="modal-backdrop"></div>
+          <div className="modal" style={{maxWidth:'420px', position:'relative', zIndex:70}}>
+            <div className="modal-body" style={{textAlign:'center'}}>
+              <div style={{fontSize:'48px', marginBottom:'12px'}}>{isPending ? '⏳' : '🔒'}</div>
+              <h2 style={{marginBottom:'8px'}}>{isPending ? 'Доступ ещё не выдан' : 'Нужен вход в систему'}</h2>
+              <p style={{color:'#6b7280', fontSize:'14px', marginBottom:'16px'}}>
+                {isPending
+                  ? <>Ваш аккаунт <b>{sbUser.email}</b> создан и отправлен владельцу приложения. Как только он выдаст вам доступ (роль «Сотрудник» или «Редактор»), страница обновится автоматически.</>
+                  : 'Приложение закрыто паролем: данные видны только сотрудникам, которым владелец выдал доступ.'}
+              </p>
+              {isPending ? (
+                <button className="btn-secondary" onClick={logout}>Выйти</button>
+              ) : (
+                <button className="btn-primary" onClick={() => { setLoginError(''); setAuthMode('login'); setLoginOpen(true); }}>🔐 Войти / зарегистрироваться</button>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Team Panel */}
       {showTeam && (
@@ -636,30 +666,41 @@ function App() {
             ) : (
               <div style={{fontSize:'13px',color:'#9ca3af'}}>Добавлять, удалять сотрудников и менять их роли может только владелец. {!loggedIn && '🔐 Войдите, чтобы получить доступ.'}</div>
             )}
-            {useSupabase && isOwner && profiles.length > 1 && (
+            {useSupabase && isOwner && profiles.length > 0 && (() => {
+              const pendingList = profiles.filter(p => p.role === 'pending');
+              const accessList = profiles.filter(p => p.id !== (sbUser && sbUser.id));
+              return (
               <div style={{marginTop:'14px'}}>
-                <h3 style={{fontWeight:600, fontSize:'14px', marginBottom:'8px'}}>Доступ к приложению (аккаунты)</h3>
-                {profiles.filter(p => p.role !== 'owner').map(p => (
+                <h3 style={{fontWeight:600, fontSize:'14px', marginBottom:'8px'}}>
+                  🔑 Доступ к приложению (аккаунты)
+                  {pendingList.length > 0 && <span style={{marginLeft:'8px', background:'#fef3c7', color:'#b45309', borderRadius:'10px', padding:'2px 8px', fontSize:'11px'}}>ждут одобрения: {pendingList.length}</span>}
+                </h3>
+                {accessList.map(p => (
                   <div key={p.id} className="member-chip" style={{marginBottom:'6px'}}>
-                    <span>👤</span>
-                    <span style={{fontWeight:500}}>{p.name}</span>
+                    <span>{p.role === 'pending' ? '⏳' : p.role === 'editor' ? '✏️' : '👤'}</span>
+                    <span style={{fontWeight:500}}>{p.name || (p.email || '').split('@')[0] || 'Участник'}</span>
+                    {p.email && <span style={{color:'#9ca3af', fontSize:'11px'}}>{p.email}</span>}
                     <select
                       value={p.role}
                       onChange={e => changeUserRole(p.id, e.target.value)}
                       style={{padding:'2px 8px',border:'1px solid #e5e7eb',borderRadius:'8px',fontSize:'12px'}}
                       title="Права доступа"
                     >
+                      <option value="pending">⛔ Нет доступа (ожидает)</option>
                       <option value="member">Сотрудник (просмотр задач)</option>
                       <option value="editor">Редактор (может менять задачи)</option>
                       <option value="owner">Владелец (полный доступ)</option>
                     </select>
+                    <button className="remove" title="Отозвать доступ и удалить аккаунт" onClick={() => removeProfile(p.id, p.name || p.email)}>×</button>
                   </div>
                 ))}
                 <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'6px'}}>
-                  Роль «Владелец» даёт полный доступ. Сменить её обратно себе или другим владельцам можно только здесь — проверка проходит на сервере Supabase.
+                  Новые регистрации попадают в статус «Нет доступа» — вы сами решаете, кого пустить.
+                  Кнопка × отзывает доступ полностью. Свою роль владельца изменить нельзя (защита от самозапирания).
                 </div>
               </div>
-            )}
+              );
+            })()}
           </div>
         </div>
       )}
@@ -850,7 +891,12 @@ function App() {
                   </div>
                   {authMode === 'login' && (
                     <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'10px'}}>
-                      Первый вошедший становится владельцем. Сотрудникам создайте аккаунты через «Регистрацию» — их правами управляете только вы.
+                      Приложение закрыто: доступ выдаёт только владелец. Зарегистрируйтесь — заявка попадёт ему на одобрение.
+                    </div>
+                  )}
+                  {authMode === 'register' && (
+                    <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'10px'}}>
+                      После регистрации аккаунт получит статус «ожидает» — владелец увидит его в панели «Команда → Доступ к приложению».
                     </div>
                   )}
                 </form>
