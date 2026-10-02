@@ -170,6 +170,18 @@
   .deadline-badge { background: #f3f4f6; color: #6b7280; }
   .deadline-badge.overdue { background: #fee2e2; color: #dc2626; }
   .deadline-badge.due-soon { background: #fef3c7; color: #d97706; }
+  .done-badge { background: #dcfce7; color: #15803d; }
+
+  /* Invite codes panel */
+  .invite-row { display: flex; align-items: center; gap: 8px; padding: 6px 10px; background: #f9fafb; border: 1px solid #f3f4f6; border-radius: 10px; font-size: 13px; }
+  .invite-code { font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace; letter-spacing: 1px; font-weight: 600; color: #4f46e5; user-select: all; }
+  .invite-status { margin-left: auto; font-size: 12px; }
+  .invite-active { color: #15803d; background: #dcfce7; padding: 2px 8px; border-radius: 10px; font-weight: 600; }
+  .invite-used { color: #6b7280; }
+  .invite-form { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-top: 8px; }
+  .invite-form input { padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; outline: none; text-transform: uppercase; font-family: ui-monospace, Menlo, Consolas, monospace; letter-spacing: 1px; }
+  .invite-form button { padding: 6px 12px; background: #eef2ff; color: #4f46e5; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
+  .invite-form button:hover { background: #e0e7ff; }
 
   @media (max-width: 768px) {
     .stats { display: none; }
@@ -325,6 +337,10 @@ function App() {
   const [sbProfile, setSbProfile] = useState(null);  // { id, name, role }
   const [authMode, setAuthMode] = useState('login'); // 'login' | 'register' — для входа сотрудников
   const [regName, setRegName] = useState('');
+  const [regCode, setRegCode] = useState('');           // код приглашения от владельца
+  // Коды приглашений (доступ выдаёт только владелец)
+  const [inviteCodes, setInviteCodes] = useState([]);
+  const [newInviteCode, setNewInviteCode] = useState('');
 
   const isOwner = useSupabase
     ? !!(sbProfile && sbProfile.role === 'owner')
@@ -395,13 +411,16 @@ function App() {
         // поэтому обмануть его из браузера нельзя).
         const { data: owners } = await sb.from('profiles').select('id').eq('role', 'owner').limit(1);
         const role = (owners && owners.length > 0) ? 'member' : 'owner';
-        let attempt = await sb.from('profiles').insert({ id: userId, name: (userId || '').split('@')[0] || 'Участник', role }).select().maybeSingle();
+        // Имя берём из meta_data аккаунта (указано при регистрации по коду), иначе — из email
+        const metaName = (user.user_metadata && user.user_metadata.name) || '';
+        const fallbackName = (user.email || '').split('@')[0] || 'Участник';
+        let attempt = await sb.from('profiles').insert({ id: userId, name: metaName || fallbackName, role }).select().maybeSingle();
         if (attempt.error && role === 'owner') {
           // Сервер отверг owner (уже есть владелец) — пробуем member
-          attempt = await sb.from('profiles').insert({ id: userId, name: (userId || '').split('@')[0] || 'Участник', role: 'member' }).select().maybeSingle();
+          attempt = await sb.from('profiles').insert({ id: userId, name: metaName || fallbackName, role: 'member' }).select().maybeSingle();
         }
         const { data: finalProf } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
-        if (mounted) setSbProfile(finalProf || attempt.data || { id: userId, name: 'Участник', role: 'member' });
+        if (mounted) setSbProfile(finalProf || attempt.data || { id: userId, name: metaName || fallbackName, role: 'member' });
       }
       // Обновляем список профилей для панели «Доступ»
       const { data: all } = await sb.from('profiles').select('*');
@@ -457,17 +476,66 @@ function App() {
   const doRegister = async () => {
     setLoginError('');
     if (regName.trim().length < 2) { setLoginError('Укажите имя (минимум 2 символа)'); return; }
+    if (!regCode.trim()) { setLoginError('Введите код приглашения — его выдаёт владелец приложения'); return; }
     if (loginPass.length < 6) { setLoginError('Пароль должен быть не короче 6 символов'); return; }
-    const { data, error } = await sb.auth.signUp({ email: loginName.trim(), password: loginPass });
-    if (error) { setLoginError(error.message); return; }
+    // Код передаём в meta_data: триггер в базе Supabase проверит его при создании
+    // аккаунта. Без действительного кода сервер отклонит регистрацию.
+    const { data, error } = await sb.auth.signUp({
+      email: loginName.trim(),
+      password: loginPass,
+      options: { data: { name: regName.trim(), invite_code: regCode.trim().toUpperCase() } },
+    });
+    if (error) {
+      const msg = (error.message || '').toLowerCase();
+      if (msg.includes('код приглашения') || msg.includes('invite')) {
+        setLoginError('Неверный или уже использованный код приглашения. Обратитесь к владельцу приложения.');
+      } else {
+        setLoginError(error.message);
+      }
+      return;
+    }
     // Профиль создастся автоматически при первом входе (см. fetchProfile).
     // Если Supabase настроен без подтверждения email — пользователь уже вошёл.
     if (data.session) {
-      setLoginOpen(false); setLoginName(''); setLoginPass(''); setRegName('');
+      setLoginOpen(false); setLoginName(''); setLoginPass(''); setRegName(''); setRegCode('');
     } else {
       setLoginError('✅ Аккаунт создан! Проверьте почту и подтвердите адрес, затем войдите.');
       setAuthMode('login'); setLoginPass('');
     }
+  };
+
+  // --- Коды приглашений (доступ выдаёт только владелец) ---
+  const refreshInviteCodes = async () => {
+    if (!sb) return;
+    const { data } = await sb.from('invite_codes').select('*').order('created_at', { ascending: false });
+    if (data) setInviteCodes(data);
+  };
+  useEffect(() => {
+    if (sb && isOwner) refreshInviteCodes();
+  }, [isOwner]);
+
+  function genInviteCode() {
+    const alphabet = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'; // без похожих символов (0/O, 1/I)
+    const bytes = crypto.getRandomValues(new Uint8Array(8));
+    const chars = Array.from(bytes, b => alphabet[b % alphabet.length]);
+    return chars.slice(0, 4).join('') + '-' + chars.slice(4).join('');
+  }
+
+  const addInviteCode = async (code) => {
+    if (!requireAdmin('выдачу кодов доступа')) return;
+    const c = (code || '').trim().toUpperCase();
+    if (c.length < 4) { alert('Код должен быть не короче 4 символов'); return; }
+    const { error } = await sb.from('invite_codes').insert({ code: c, created_by: sbUser ? sbUser.id : null });
+    if (error) { alert('Не удалось создать код (возможно, такой код уже существует): ' + error.message); return; }
+    setNewInviteCode('');
+    refreshInviteCodes();
+  };
+
+  const removeInviteCode = async (code) => {
+    if (!requireAdmin('отзыв кода доступа')) return;
+    if (!confirm(`Удалить код ${code}? Он больше не сможет быть использован для регистрации.`)) return;
+    await sb.from('invite_codes').delete().eq('code', code);
+    refreshInviteCodes();
   };
 
   const logout = () => {
@@ -516,10 +584,21 @@ function App() {
 
   const saveTask = (task) => {
     if (useSupabase && !canEditTasks) { alert('Редактировать задачи могут только владелец и редакторы.'); return; }
+    // Если статус менялся через форму — тоже корректно ставим/снимаем дату выполнения
+    const prevTask = tasks.find(t => t.id === task.id);
+    let finalTask = task;
+    if (prevTask && prevTask.status !== task.status) {
+      // applyStatusChange возьмёт completedAt из prevTask (сохраняем, если задача уже была выполнена ранее)
+      finalTask = applyStatusChange({ ...task, completedAt: prevTask.completedAt }, task.status);
+    } else if (task.status === 'done' && !task.completedAt) {
+      finalTask = { ...task, completedAt: new Date().toISOString() };
+    } else if (task.status !== 'done') {
+      finalTask = { ...task, completedAt: null };
+    }
     setTasks(prev => {
-      const idx = prev.findIndex(t => t.id === task.id);
-      if (idx >= 0) { const n = [...prev]; n[idx] = task; return n; }
-      return [...prev, task];
+      const idx = prev.findIndex(t => t.id === finalTask.id);
+      if (idx >= 0) { const n = [...prev]; n[idx] = finalTask; return n; }
+      return [...prev, finalTask];
     });
   };
 
@@ -530,8 +609,17 @@ function App() {
 
   const changeStatus = (id, status) => {
     if (useSupabase && !canEditTasks) return;
-    setTasks(prev => prev.map(t => t.id === id ? {...t, status, updatedAt: new Date().toISOString()} : t));
+    setTasks(prev => prev.map(t => t.id === id ? applyStatusChange(t, status) : t));
   };
+
+  // При переводе в «Готово» запоминаем фактическую дату выполнения задачи,
+  // при возврате из «Готово» — очищаем её.
+  function applyStatusChange(t, status) {
+    const n = { ...t, status, updatedAt: new Date().toISOString() };
+    if (status === 'done' && t.status !== 'done') n.completedAt = new Date().toISOString();
+    if (status !== 'done') n.completedAt = null;
+    return n;
+  }
 
   const openNew = (status = 'todo') => { setEditingTask(null); setDefaultStatus(status); setModalOpen(true); };
   const openEdit = (task) => { setEditingTask(task); setDefaultStatus(task.status); setModalOpen(true); };
@@ -660,6 +748,42 @@ function App() {
                 </div>
               </div>
             )}
+            {useSupabase && isOwner && (
+              <div style={{marginTop:'14px'}}>
+                <h3 style={{fontWeight:600, fontSize:'14px', marginBottom:'8px'}}>🎟️ Коды приглашений (доступ выдаёте только вы)</h3>
+                <div style={{fontSize:'12px',color:'#6b7280',marginBottom:'8px'}}>
+                  Человек сможет зарегистрироваться только с действительным кодом — проверка идёт на сервере Supabase.
+                  Каждый код используется один раз. Вы можете отозвать неиспользованный код.
+                </div>
+                {inviteCodes.length === 0 ? (
+                  <div style={{fontSize:'13px',color:'#9ca3af',marginBottom:'6px'}}>Пока нет ни одного кода — создайте первый ниже.</div>
+                ) : (
+                  <div style={{display:'flex',flexDirection:'column',gap:'6px',maxWidth:'560px'}}>
+                    {inviteCodes.map(ic => (
+                      <div key={ic.code} className="invite-row">
+                        <span className="invite-code">{ic.code}</span>
+                        <span className="invite-status">
+                          {ic.used_by
+                            ? <span className="invite-used">✅ использован {formatDate(ic.used_at)}</span>
+                            : <span className="invite-active">активен</span>}
+                        </span>
+                        {!ic.used_by && (
+                          <button onClick={() => { navigator.clipboard && navigator.clipboard.writeText(ic.code); alert('Код скопирован: ' + ic.code); }}
+                                  style={{border:'none',background:'transparent',cursor:'pointer',fontSize:'13px'}} title="Скопировать код">📋</button>
+                        )}
+                        <button onClick={() => removeInviteCode(ic.code)}
+                                style={{border:'none',background:'transparent',cursor:'pointer',fontSize:'13px',color:'#ef4444'}} title="Удалить код">✕</button>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                <div className="invite-form">
+                  <input value={newInviteCode} onChange={e => setNewInviteCode(e.target.value.toUpperCase())}
+                         placeholder="Свой код или пусто — сгенерируем" onKeyDown={e => e.key === 'Enter' && addInviteCode(newInviteCode || genInviteCode())} />
+                  <button onClick={() => addInviteCode(newInviteCode || genInviteCode())}>➕ Создать код</button>
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -728,7 +852,11 @@ function App() {
                           <span className={`badge ${pCfg.class}`}>
                             <span className="badge-dot"></span>{pCfg.label}
                           </span>
-                          {task.deadline && (
+                          {task.status === 'done' ? (
+                            <span className="badge done-badge" title={task.completedAt ? 'Дата фактического выполнения задачи' : 'Выполнена (точная дата не зафиксирована)'}>
+                              ✅ {task.completedAt ? formatDate(task.completedAt) : 'Готово'}
+                            </span>
+                          ) : task.deadline && (
                             <span className={`badge deadline-badge ${overdue ? 'overdue' : ''} ${dueSoon ? 'due-soon' : ''}`}>
                               {overdue ? '⚠️' : dueSoon ? '⏰' : '📅'} {formatDate(task.deadline)}
                             </span>
@@ -769,12 +897,12 @@ function App() {
             <table>
               <thead>
                 <tr>
-                  <th>Задача</th><th>Статус</th><th>Приоритет</th><th>Исполнитель</th><th>Дедлайн</th><th></th>
+                  <th>Задача</th><th>Статус</th><th>Приоритет</th><th>Исполнитель</th><th>Дедлайн</th><th>Выполнено</th><th></th>
                 </tr>
               </thead>
               <tbody>
                 {filtered.length === 0 ? (
-                  <tr><td colSpan="6" style={{textAlign:'center',padding:'40px',color:'#9ca3af'}}>📭 Задачи не найдены</td></tr>
+                  <tr><td colSpan="7" style={{textAlign:'center',padding:'40px',color:'#9ca3af'}}>📭 Задачи не найдены</td></tr>
                 ) : filtered.map(task => {
                   const assignee = members.find(m => m.id === task.assignee);
                   const overdue = task.deadline && task.status !== 'done' && isOverdue(task.deadline);
@@ -792,6 +920,7 @@ function App() {
                       <td><span className={`badge ${PRIORITY_CONFIG[task.priority].class}`} style={{fontSize:'11px'}}>{task.priority === 'urgent' ? '🔴' : task.priority === 'high' ? '🟠' : task.priority === 'medium' ? '🔵' : '🟢'} {PRIORITY_CONFIG[task.priority].label}</span></td>
                       <td>{assignee ? `${assignee.avatar} ${assignee.name}` : <span style={{color:'#9ca3af'}}>—</span>}</td>
                       <td style={overdue ? {color:'#dc2626',fontWeight:500} : {}}>{task.deadline ? `${overdue ? '⚠️ ' : ''}${formatDate(task.deadline)}` : '—'}</td>
+                      <td>{task.status === 'done' ? (task.completedAt ? <span style={{color:'#15803d',fontWeight:500}}>✅ {formatDate(task.completedAt)}</span> : '✅' ) : '—'}</td>
                       <td><button onClick={e => { e.stopPropagation(); deleteTask(task.id); }} style={{border:'none',background:'transparent',cursor:'pointer',fontSize:'14px'}}>🗑️</button></td>
                     </tr>
                   );
@@ -828,10 +957,20 @@ function App() {
               {useSupabase ? (
                 <form onSubmit={e => { e.preventDefault(); authMode === 'login' ? doLogin() : doRegister(); }}>
                   {authMode === 'register' && (
-                    <div className="form-group">
-                      <label>Имя</label>
-                      <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="Как вас называть" autoFocus />
-                    </div>
+                    <React.Fragment>
+                      <div className="form-group">
+                        <label>Имя</label>
+                        <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="Как вас называть" autoFocus />
+                      </div>
+                      <div className="form-group">
+                        <label>Код приглашения *</label>
+                        <input value={regCode} onChange={e => setRegCode(e.target.value.toUpperCase())} placeholder="Например: AB12-CD34"
+                               style={{ textTransform:'uppercase', fontFamily:"ui-monospace, Menlo, Consolas, monospace", letterSpacing:'1px' }} />
+                        <div className="form-hint" style={{color:'#6b7280'}}>
+                          Одноразовый код выдаёт владелец приложения. Без него регистрация невозможна — это проверяет сервер.
+                        </div>
+                      </div>
+                    </React.Fragment>
                   )}
                   <div className="form-group">
                     <label>Email</label>
@@ -850,7 +989,7 @@ function App() {
                   </div>
                   {authMode === 'login' && (
                     <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'10px'}}>
-                      Первый вошедший становится владельцем. Сотрудникам создайте аккаунты через «Регистрацию» — их правами управляете только вы.
+                      Регистрация сотрудников возможна только по одноразовому коду приглашения — коды создаёте вы в панели «👥 Команда → Коды приглашений».
                     </div>
                   )}
                 </form>
@@ -957,8 +1096,20 @@ function TaskModal({ task, defaultStatus, members, onClose, onSave }) {
               <input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} />
               {deadline && (
                 <div className={`form-hint ${overdue ? 'color:#dc2626' : dueSoon ? 'color:#d97706' : 'color:#6b7280'}`}>
-                  {overdue ? '⚠️ Просрочено!' : dueSoon ? '⏰ Скоро дедлайн!' : '📅 В срок'}
+                  {status === 'done'
+                    ? '📅 Дедлайн задачи'
+                    : overdue ? '⚠️ Просрочено!' : dueSoon ? '⏰ Скоро дедлайн!' : '📅 В срок'}
                 </div>
+              )}
+              {status === 'done' && task && (
+                <div className="form-hint" style={{color:'#15803d'}}>
+                  ✅ Выполнено: {task.completedAt
+                    ? new Date(task.completedAt).toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', year: 'numeric' })
+                    : 'дата не зафиксирована (будет сохранена текущая)'}
+                </div>
+              )}
+              {status === 'done' && !task && (
+                <div className="form-hint" style={{color:'#15803d'}}>✅ Дата выполнения будет зафиксирована при создании</div>
               )}
             </div>
             <div className="form-actions">
