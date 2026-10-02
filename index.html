@@ -1,0 +1,588 @@
+--- public/standalone.html (原始)
+
+
++++ public/standalone.html (修改后)
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TaskFlow — Управление задачами</title>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #f8fafc, #fff, #eef2ff); color: #111827; min-height: 100vh; }
+
+  .header { position: sticky; top: 0; z-index: 40; background: rgba(255,255,255,0.85); backdrop-filter: blur(20px); border-bottom: 1px solid #f3f4f6; padding: 12px 20px; }
+  .header-inner { max-width: 1600px; margin: 0 auto; display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .logo { display: flex; align-items: center; gap: 10px; }
+  .logo-icon { width: 36px; height: 36px; background: linear-gradient(135deg, #6366f1, #9333ea); border-radius: 12px; display: flex; align-items: center; justify-content: center; box-shadow: 0 4px 12px rgba(99,102,241,0.3); }
+  .logo-icon span { color: white; font-size: 18px; }
+  .logo h1 { font-size: 18px; font-weight: 700; }
+  .logo p { font-size: 11px; color: #6b7280; }
+
+  .stats { display: flex; gap: 16px; align-items: center; }
+  .stat { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6b7280; }
+  .stat-dot { width: 8px; height: 8px; border-radius: 50%; }
+  .stat b { color: #374151; }
+
+  .btn-primary { padding: 8px 16px; background: #4f46e5; color: white; border: none; border-radius: 12px; font-size: 14px; font-weight: 500; cursor: pointer; display: flex; align-items: center; gap: 6px; box-shadow: 0 4px 12px rgba(79,70,229,0.2); transition: all 0.2s; }
+  .btn-primary:hover { background: #4338ca; }
+  .btn-secondary { padding: 8px 12px; background: transparent; color: #6b7280; border: none; border-radius: 12px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; }
+  .btn-secondary:hover { background: #f3f4f6; color: #111827; }
+
+  .filters { max-width: 1600px; margin: 0 auto; padding: 16px 20px; display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+  .search-box { position: relative; flex: 1; min-width: 200px; max-width: 400px; }
+  .search-box input { width: 100%; padding: 8px 12px 8px 36px; border: 1px solid #e5e7eb; border-radius: 12px; font-size: 14px; outline: none; transition: all 0.2s; }
+  .search-box input:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+  .search-box::before { content: '🔍'; position: absolute; left: 12px; top: 50%; transform: translateY(-50%); font-size: 14px; }
+
+  .filter-select { padding: 8px 12px; border: 1px solid #e5e7eb; border-radius: 12px; font-size: 14px; outline: none; background: white; cursor: pointer; }
+  .filter-select:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+
+  .view-toggle { display: flex; border: 1px solid #e5e7eb; border-radius: 12px; overflow: hidden; }
+  .view-toggle button { padding: 8px 12px; font-size: 14px; border: none; background: white; cursor: pointer; transition: all 0.2s; }
+  .view-toggle button.active { background: #eef2ff; color: #4f46e5; }
+
+  .kanban { display: flex; gap: 16px; overflow-x: auto; padding: 0 20px 20px; max-width: 1600px; margin: 0 auto; }
+  .column { min-width: 280px; max-width: 340px; flex: 1; }
+  .column-header { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-radius: 12px; margin-bottom: 12px; }
+  .column-header-left { display: flex; align-items: center; gap: 8px; }
+  .column-header h2 { font-size: 14px; font-weight: 600; }
+  .column-count { font-size: 12px; font-weight: 700; padding: 2px 6px; border-radius: 20px; background: rgba(255,255,255,0.6); }
+  .column-add { width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; border-radius: 8px; border: none; background: transparent; cursor: pointer; font-size: 16px; color: #6b7280; transition: all 0.2s; }
+  .column-add:hover { background: rgba(255,255,255,0.5); }
+
+  .column-tasks { display: flex; flex-direction: column; gap: 10px; max-height: calc(100vh - 220px); overflow-y: auto; padding-right: 4px; }
+  .column-tasks::-webkit-scrollbar { width: 4px; }
+  .column-tasks::-webkit-scrollbar-thumb { background: #e2e8f0; border-radius: 20px; }
+
+  .task-card { background: white; border-radius: 12px; border: 1px solid #f3f4f6; padding: 14px; cursor: pointer; transition: all 0.2s; position: relative; }
+  .task-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.06); border-color: #e5e7eb; }
+  .task-card.overdue { border-color: #fecaca; background: linear-gradient(to right, #fef2f2, white); }
+  .task-card.due-soon { border-color: #fed7aa; background: linear-gradient(to right, #fffbeb, white); }
+
+  .task-title { font-size: 14px; font-weight: 600; color: #111827; margin-bottom: 4px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+  .task-desc { font-size: 12px; color: #6b7280; margin-bottom: 10px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+
+  .task-meta { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .badge { display: inline-flex; align-items: center; gap: 4px; padding: 2px 8px; border-radius: 20px; font-size: 11px; font-weight: 500; }
+  .badge-dot { width: 6px; height: 6px; border-radius: 50%; }
+
+  .task-footer { display: flex; align-items: center; justify-content: space-between; }
+  .task-assignee { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #6b7280; }
+  .task-assignee .avatar { font-size: 16px; }
+  .task-assignee .name { font-weight: 500; }
+  .task-nav { display: flex; gap: 2px; }
+  .task-nav button { width: 20px; height: 20px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: 4px; cursor: pointer; font-size: 10px; color: #9ca3af; }
+  .task-nav button:hover { background: #f3f4f6; color: #6b7280; }
+
+  .task-actions { position: absolute; top: 8px; right: 8px; display: flex; gap: 4px; opacity: 0; transition: opacity 0.2s; }
+  .task-card:hover .task-actions { opacity: 1; }
+  .task-actions button { width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: 6px; cursor: pointer; font-size: 12px; }
+  .task-actions button:hover { background: #f3f4f6; }
+
+  /* List view */
+  .list-view { max-width: 1600px; margin: 0 auto; padding: 0 20px 20px; }
+  .list-table { width: 100%; background: white; border-radius: 16px; border: 1px solid #f3f4f6; overflow: hidden; }
+  .list-table table { width: 100%; border-collapse: collapse; }
+  .list-table th { text-align: left; padding: 12px 16px; font-size: 11px; font-weight: 600; color: #6b7280; text-transform: uppercase; background: #f9fafb; border-bottom: 1px solid #f3f4f6; }
+  .list-table td { padding: 12px 16px; border-bottom: 1px solid #f9fafb; font-size: 14px; }
+  .list-table tr:hover { background: #fafafa; cursor: pointer; }
+
+  /* Modal */
+  .modal-overlay { position: fixed; inset: 0; z-index: 50; display: flex; align-items: center; justify-content: center; padding: 16px; }
+  .modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.5); backdrop-filter: blur(4px); }
+  .modal { position: relative; background: white; border-radius: 20px; box-shadow: 0 25px 50px rgba(0,0,0,0.15); width: 100%; max-width: 500px; max-height: 90vh; overflow-y: auto; }
+  .modal-body { padding: 24px; }
+  .modal-header { display: flex; align-items: center; justify-content: space-between; margin-bottom: 20px; }
+  .modal-header h2 { font-size: 20px; font-weight: 700; }
+  .modal-close { width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: 8px; cursor: pointer; font-size: 16px; color: #6b7280; }
+  .modal-close:hover { background: #f3f4f6; }
+
+  .form-group { margin-bottom: 16px; }
+  .form-group label { display: block; font-size: 13px; font-weight: 500; color: #374151; margin-bottom: 4px; }
+  .form-group input, .form-group textarea, .form-group select { width: 100%; padding: 10px 14px; border: 1px solid #e5e7eb; border-radius: 12px; font-size: 14px; outline: none; transition: all 0.2s; font-family: inherit; }
+  .form-group input:focus, .form-group textarea:focus, .form-group select:focus { border-color: #6366f1; box-shadow: 0 0 0 3px rgba(99,102,241,0.1); }
+  .form-group textarea { resize: none; }
+  .form-row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+  .form-hint { font-size: 11px; margin-top: 4px; }
+
+  .form-actions { display: flex; gap: 12px; padding-top: 16px; }
+  .form-actions button { flex: 1; padding: 10px; border-radius: 12px; font-size: 14px; font-weight: 500; cursor: pointer; transition: all 0.2s; border: none; }
+  .btn-cancel { background: white; border: 1px solid #e5e7eb !important; color: #374151; }
+  .btn-cancel:hover { background: #f9fafb; }
+  .btn-save { background: #4f46e5; color: white; box-shadow: 0 4px 12px rgba(79,70,229,0.2); }
+  .btn-save:hover { background: #4338ca; }
+
+  /* Team panel */
+  .team-panel { background: white; border-bottom: 1px solid #f3f4f6; padding: 16px 20px; }
+  .team-panel-inner { max-width: 1600px; margin: 0 auto; }
+  .team-members { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
+  .member-chip { display: flex; align-items: center; gap: 6px; padding: 6px 12px; background: #f9fafb; border-radius: 20px; font-size: 13px; }
+  .member-chip .remove { width: 16px; height: 16px; display: flex; align-items: center; justify-content: center; border: none; background: transparent; border-radius: 50%; cursor: pointer; font-size: 12px; color: #9ca3af; opacity: 0; transition: all 0.2s; }
+  .member-chip:hover .remove { opacity: 1; }
+  .member-chip .remove:hover { background: #fee2e2; color: #ef4444; }
+  .team-form { display: flex; gap: 8px; flex-wrap: wrap; }
+  .team-form input { padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; outline: none; }
+  .team-form input:focus { border-color: #6366f1; }
+  .team-form button { padding: 6px 12px; background: #eef2ff; color: #4f46e5; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
+  .team-form button:hover { background: #e0e7ff; }
+
+  /* Empty state */
+  .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; text-align: center; }
+  .empty-icon { width: 80px; height: 80px; background: #eef2ff; border-radius: 20px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; }
+  .empty-icon span { font-size: 40px; }
+  .empty-state h3 { font-size: 18px; font-weight: 600; margin-bottom: 8px; }
+  .empty-state p { font-size: 14px; color: #6b7280; max-width: 400px; margin-bottom: 20px; }
+
+  .col-todo { background: #f1f5f9; }
+  .col-todo h2 { color: #334155; }
+  .col-progress { background: #dbeafe; }
+  .col-progress h2 { color: #1d4ed8; }
+  .col-review { background: #fef3c7; }
+  .col-review h2 { color: #b45309; }
+  .col-done { background: #dcfce7; }
+  .col-done h2 { color: #15803d; }
+
+  .priority-low { background: #f8fafc; color: #64748b; }
+  .priority-low .badge-dot { background: #94a3b8; }
+  .priority-medium { background: #eff6ff; color: #2563eb; }
+  .priority-medium .badge-dot { background: #60a5fa; }
+  .priority-high { background: #fff7ed; color: #ea580c; }
+  .priority-high .badge-dot { background: #fb923c; }
+  .priority-urgent { background: #fef2f2; color: #dc2626; }
+  .priority-urgent .badge-dot { background: #ef4444; }
+
+  .deadline-badge { background: #f3f4f6; color: #6b7280; }
+  .deadline-badge.overdue { background: #fee2e2; color: #dc2626; }
+  .deadline-badge.due-soon { background: #fef3c7; color: #d97706; }
+
+  @media (max-width: 768px) {
+    .stats { display: none; }
+    .kanban { padding: 0 12px 12px; }
+    .filters { padding: 12px; }
+    .column { min-width: 260px; }
+  }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel">
+const { useState, useEffect, useMemo } = React;
+
+const STATUS_CONFIG = {
+  todo: { label: 'К выполнению', icon: '📋', colClass: 'col-todo' },
+  in_progress: { label: 'В работе', icon: '🔄', colClass: 'col-progress' },
+  review: { label: 'На проверке', icon: '🔍', colClass: 'col-review' },
+  done: { label: 'Готово', icon: '✅', colClass: 'col-done' },
+};
+
+const PRIORITY_CONFIG = {
+  low: { label: 'Низкий', class: 'priority-low' },
+  medium: { label: 'Средний', class: 'priority-medium' },
+  high: { label: 'Высокий', class: 'priority-high' },
+  urgent: { label: 'Срочный', class: 'priority-urgent' },
+};
+
+const DEFAULT_MEMBERS = [
+  { id: '1', name: 'Александр', avatar: '👨‍💻', role: 'Разработчик' },
+  { id: '2', name: 'Мария', avatar: '👩‍🎨', role: 'Дизайнер' },
+  { id: '3', name: 'Дмитрий', avatar: '👨‍💼', role: 'Менеджер' },
+  { id: '4', name: 'Елена', avatar: '👩‍💻', role: 'Тестировщик' },
+];
+
+function loadData(key, fallback) {
+  try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : fallback; } catch { return fallback; }
+}
+
+function genId() { return Date.now().toString(36) + Math.random().toString(36).substr(2); }
+
+function formatDate(d) {
+  if (!d) return '';
+  return new Date(d).toLocaleDateString('ru-RU', { day: 'numeric', month: 'short', year: 'numeric' });
+}
+
+function isOverdue(d) {
+  if (!d) return false;
+  const dl = new Date(d); const today = new Date(); today.setHours(0,0,0,0);
+  return dl < today;
+}
+
+function isDueSoon(d) {
+  if (!d) return false;
+  const dl = new Date(d); const today = new Date(); today.setHours(0,0,0,0);
+  const diff = (dl - today) / (1000*60*60*24);
+  return diff >= 0 && diff <= 3;
+}
+
+function App() {
+  const [tasks, setTasks] = useState(() => loadData('tf_tasks', []));
+  const [members, setMembers] = useState(() => loadData('tf_members', DEFAULT_MEMBERS));
+  const [modalOpen, setModalOpen] = useState(false);
+  const [editingTask, setEditingTask] = useState(null);
+  const [defaultStatus, setDefaultStatus] = useState('todo');
+  const [filterAssignee, setFilterAssignee] = useState('');
+  const [filterPriority, setFilterPriority] = useState('');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showTeam, setShowTeam] = useState(false);
+  const [newName, setNewName] = useState('');
+  const [newRole, setNewRole] = useState('');
+  const [viewMode, setViewMode] = useState('kanban');
+
+  useEffect(() => { localStorage.setItem('tf_tasks', JSON.stringify(tasks)); }, [tasks]);
+  useEffect(() => { localStorage.setItem('tf_members', JSON.stringify(members)); }, [members]);
+
+  const filtered = useMemo(() => tasks.filter(t => {
+    if (filterAssignee && t.assignee !== filterAssignee) return false;
+    if (filterPriority && t.priority !== filterPriority) return false;
+    if (searchQuery) {
+      const q = searchQuery.toLowerCase();
+      return t.title.toLowerCase().includes(q) || t.description.toLowerCase().includes(q);
+    }
+    return true;
+  }), [tasks, filterAssignee, filterPriority, searchQuery]);
+
+  const stats = useMemo(() => ({
+    total: tasks.length,
+    done: tasks.filter(t => t.status === 'done').length,
+    overdue: tasks.filter(t => t.deadline && t.status !== 'done' && isOverdue(t.deadline)).length,
+    inProgress: tasks.filter(t => t.status === 'in_progress').length,
+  }), [tasks]);
+
+  const saveTask = (task) => {
+    setTasks(prev => {
+      const idx = prev.findIndex(t => t.id === task.id);
+      if (idx >= 0) { const n = [...prev]; n[idx] = task; return n; }
+      return [...prev, task];
+    });
+  };
+
+  const deleteTask = (id) => {
+    if (confirm('Удалить задачу?')) setTasks(prev => prev.filter(t => t.id !== id));
+  };
+
+  const changeStatus = (id, status) => {
+    setTasks(prev => prev.map(t => t.id === id ? {...t, status, updatedAt: new Date().toISOString()} : t));
+  };
+
+  const openNew = (status = 'todo') => { setEditingTask(null); setDefaultStatus(status); setModalOpen(true); };
+  const openEdit = (task) => { setEditingTask(task); setDefaultStatus(task.status); setModalOpen(true); };
+
+  const addMember = () => {
+    if (!newName.trim()) return;
+    const emojis = ['👤','👨‍💻','👩‍💻','👨‍🎨','👩‍🎨','🧑‍💼','👨‍🔧','👩‍🔬'];
+    setMembers(prev => [...prev, { id: genId(), name: newName.trim(), avatar: emojis[Math.floor(Math.random()*emojis.length)], role: newRole.trim() || 'Участник' }]);
+    setNewName(''); setNewRole('');
+  };
+
+  const removeMember = (id) => {
+    if (confirm('Удалить участника?')) setMembers(prev => prev.filter(m => m.id !== id));
+  };
+
+  const statuses = ['todo', 'in_progress', 'review', 'done'];
+
+  return (
+    <div>
+      {/* Header */}
+      <div className="header">
+        <div className="header-inner">
+          <div className="logo">
+            <div className="logo-icon"><span>⚡</span></div>
+            <div>
+              <h1>TaskFlow</h1>
+              <p>Управление задачами команды</p>
+            </div>
+          </div>
+          <div className="stats">
+            <div className="stat"><span className="stat-dot" style={{background:'#6366f1'}}></span>Всего: <b>{stats.total}</b></div>
+            <div className="stat"><span className="stat-dot" style={{background:'#3b82f6'}}></span>В работе: <b>{stats.inProgress}</b></div>
+            <div className="stat"><span className="stat-dot" style={{background:'#22c55e'}}></span>Готово: <b>{stats.done}</b></div>
+            {stats.overdue > 0 && <div className="stat"><span className="stat-dot" style={{background:'#ef4444'}}></span><span style={{color:'#dc2626'}}>Просрочено: <b>{stats.overdue}</b></span></div>}
+          </div>
+          <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+            <button className="btn-secondary" onClick={() => setShowTeam(!showTeam)}>👥 Команда</button>
+            <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>
+          </div>
+        </div>
+      </div>
+
+      {/* Team Panel */}
+      {showTeam && (
+        <div className="team-panel">
+          <div className="team-panel-inner">
+            <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
+              <h3 style={{fontWeight:600}}>Команда</h3>
+              <button className="modal-close" onClick={() => setShowTeam(false)}>✕</button>
+            </div>
+            <div className="team-members">
+              {members.map(m => (
+                <div key={m.id} className="member-chip">
+                  <span>{m.avatar}</span>
+                  <span style={{fontWeight:500}}>{m.name}</span>
+                  <span style={{color:'#9ca3af',fontSize:'12px'}}>{m.role}</span>
+                  <button className="remove" onClick={() => removeMember(m.id)}>×</button>
+                </div>
+              ))}
+            </div>
+            <div className="team-form">
+              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Имя" onKeyDown={e => e.key === 'Enter' && addMember()} />
+              <input value={newRole} onChange={e => setNewRole(e.target.value)} placeholder="Роль" onKeyDown={e => e.key === 'Enter' && addMember()} />
+              <button onClick={addMember}>Добавить</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Filters */}
+      <div className="filters">
+        <div className="search-box">
+          <input value={searchQuery} onChange={e => setSearchQuery(e.target.value)} placeholder="Поиск задач..." />
+        </div>
+        <select className="filter-select" value={filterAssignee} onChange={e => setFilterAssignee(e.target.value)}>
+          <option value="">Все исполнители</option>
+          {members.map(m => <option key={m.id} value={m.id}>{m.avatar} {m.name}</option>)}
+        </select>
+        <select className="filter-select" value={filterPriority} onChange={e => setFilterPriority(e.target.value)}>
+          <option value="">Все приоритеты</option>
+          <option value="low">🟢 Низкий</option>
+          <option value="medium">🔵 Средний</option>
+          <option value="high">🟠 Высокий</option>
+          <option value="urgent">🔴 Срочный</option>
+        </select>
+        <div className="view-toggle">
+          <button className={viewMode === 'kanban' ? 'active' : ''} onClick={() => setViewMode('kanban')}>📊 Доска</button>
+          <button className={viewMode === 'list' ? 'active' : ''} onClick={() => setViewMode('list')}>📋 Список</button>
+        </div>
+        {(filterAssignee || filterPriority || searchQuery) && (
+          <button className="btn-secondary" onClick={() => { setFilterAssignee(''); setFilterPriority(''); setSearchQuery(''); }}>✕ Сбросить</button>
+        )}
+      </div>
+
+      {/* Kanban View */}
+      {viewMode === 'kanban' && (
+        <div className="kanban">
+          {statuses.map(status => {
+            const cfg = STATUS_CONFIG[status];
+            const colTasks = filtered.filter(t => t.status === status);
+            return (
+              <div key={status} className="column">
+                <div className={`column-header ${cfg.colClass}`}>
+                  <div className="column-header-left">
+                    <span style={{fontSize:'18px'}}>{cfg.icon}</span>
+                    <h2>{cfg.label}</h2>
+                    <span className="column-count">{colTasks.length}</span>
+                  </div>
+                  <button className="column-add" onClick={() => openNew(status)}>+</button>
+                </div>
+                <div className="column-tasks">
+                  {colTasks.length === 0 ? (
+                    <div style={{textAlign:'center',padding:'30px 0',color:'#9ca3af'}}>
+                      <div style={{fontSize:'30px',opacity:0.5,marginBottom:'8px'}}>📭</div>
+                      <div style={{fontSize:'12px'}}>Нет задач</div>
+                    </div>
+                  ) : colTasks.map(task => {
+                    const assignee = members.find(m => m.id === task.assignee);
+                    const pCfg = PRIORITY_CONFIG[task.priority];
+                    const overdue = task.status !== 'done' && isOverdue(task.deadline);
+                    const dueSoon = task.status !== 'done' && isDueSoon(task.deadline);
+                    return (
+                      <div key={task.id} className={`task-card ${overdue ? 'overdue' : ''} ${dueSoon ? 'due-soon' : ''}`} onClick={() => openEdit(task)}>
+                        <div className="task-actions">
+                          <button onClick={e => { e.stopPropagation(); openEdit(task); }}>✏️</button>
+                          <button onClick={e => { e.stopPropagation(); deleteTask(task.id); }}>🗑️</button>
+                        </div>
+                        <div className="task-title">{task.title}</div>
+                        {task.description && <div className="task-desc">{task.description}</div>}
+                        <div className="task-meta">
+                          <span className={`badge ${pCfg.class}`}>
+                            <span className="badge-dot"></span>{pCfg.label}
+                          </span>
+                          {task.deadline && (
+                            <span className={`badge deadline-badge ${overdue ? 'overdue' : ''} ${dueSoon ? 'due-soon' : ''}`}>
+                              {overdue ? '⚠️' : dueSoon ? '⏰' : '📅'} {formatDate(task.deadline)}
+                            </span>
+                          )}
+                        </div>
+                        <div className="task-footer">
+                          {assignee ? (
+                            <div className="task-assignee">
+                              <span className="avatar">{assignee.avatar}</span>
+                              <span className="name">{assignee.name}</span>
+                            </div>
+                          ) : (
+                            <span style={{fontSize:'12px',color:'#9ca3af',fontStyle:'italic'}}>Не назначен</span>
+                          )}
+                          <div className="task-nav">
+                            {task.status !== 'todo' && (
+                              <button onClick={e => { e.stopPropagation(); const s = ['todo','in_progress','review','done']; const i = s.indexOf(task.status); if(i>0) changeStatus(task.id, s[i-1]); }}>◀</button>
+                            )}
+                            {task.status !== 'done' && (
+                              <button onClick={e => { e.stopPropagation(); const s = ['todo','in_progress','review','done']; const i = s.indexOf(task.status); if(i<s.length-1) changeStatus(task.id, s[i+1]); }}>▶</button>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {/* List View */}
+      {viewMode === 'list' && (
+        <div className="list-view">
+          <div className="list-table">
+            <table>
+              <thead>
+                <tr>
+                  <th>Задача</th><th>Статус</th><th>Приоритет</th><th>Исполнитель</th><th>Дедлайн</th><th></th>
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.length === 0 ? (
+                  <tr><td colSpan="6" style={{textAlign:'center',padding:'40px',color:'#9ca3af'}}>📭 Задачи не найдены</td></tr>
+                ) : filtered.map(task => {
+                  const assignee = members.find(m => m.id === task.assignee);
+                  const overdue = task.deadline && task.status !== 'done' && isOverdue(task.deadline);
+                  return (
+                    <tr key={task.id} onClick={() => openEdit(task)} style={overdue ? {background:'#fef2f2'} : {}}>
+                      <td><div style={{fontWeight:500}}>{task.title}</div>{task.description && <div style={{fontSize:'12px',color:'#6b7280'}}>{task.description}</div>}</td>
+                      <td>
+                        <select value={task.status} onChange={e => { e.stopPropagation(); changeStatus(task.id, e.target.value); }} onClick={e => e.stopPropagation()} style={{fontSize:'12px',padding:'4px 8px',borderRadius:'8px',border:'1px solid #e5e7eb'}}>
+                          <option value="todo">📋 К выполнению</option>
+                          <option value="in_progress">🔄 В работе</option>
+                          <option value="review">🔍 На проверке</option>
+                          <option value="done">✅ Готово</option>
+                        </select>
+                      </td>
+                      <td><span className={`badge ${PRIORITY_CONFIG[task.priority].class}`} style={{fontSize:'11px'}}>{task.priority === 'urgent' ? '🔴' : task.priority === 'high' ? '🟠' : task.priority === 'medium' ? '🔵' : '🟢'} {PRIORITY_CONFIG[task.priority].label}</span></td>
+                      <td>{assignee ? `${assignee.avatar} ${assignee.name}` : <span style={{color:'#9ca3af'}}>—</span>}</td>
+                      <td style={overdue ? {color:'#dc2626',fontWeight:500} : {}}>{task.deadline ? `${overdue ? '⚠️ ' : ''}${formatDate(task.deadline)}` : '—'}</td>
+                      <td><button onClick={e => { e.stopPropagation(); deleteTask(task.id); }} style={{border:'none',background:'transparent',cursor:'pointer',fontSize:'14px'}}>🗑️</button></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {/* Empty State */}
+      {tasks.length === 0 && (
+        <div className="empty-state">
+          <div className="empty-icon"><span>🚀</span></div>
+          <h3>Добро пожаловать в TaskFlow!</h3>
+          <p>Создайте свою первую задачу, назначьте исполнителя и установите дедлайн.</p>
+          <button className="btn-primary" onClick={() => openNew()}>+ Создать первую задачу</button>
+        </div>
+      )}
+
+      {/* Modal */}
+      {modalOpen && <TaskModal task={editingTask} defaultStatus={defaultStatus} members={members} onClose={() => setModalOpen(false)} onSave={saveTask} />}
+    </div>
+  );
+}
+
+function TaskModal({ task, defaultStatus, members, onClose, onSave }) {
+  const [title, setTitle] = useState(task?.title || '');
+  const [description, setDescription] = useState(task?.description || '');
+  const [status, setStatus] = useState(task?.status || defaultStatus);
+  const [priority, setPriority] = useState(task?.priority || 'medium');
+  const [assignee, setAssignee] = useState(task?.assignee || '');
+  const [deadline, setDeadline] = useState(task?.deadline || '');
+
+  const handleSubmit = (e) => {
+    e.preventDefault();
+    if (!title.trim()) return;
+    const now = new Date().toISOString();
+    onSave({
+      id: task?.id || genId(),
+      title: title.trim(),
+      description: description.trim(),
+      status, priority, assignee, deadline,
+      createdAt: task?.createdAt || now,
+      updatedAt: now,
+    });
+    onClose();
+  };
+
+  const overdue = deadline && isOverdue(deadline);
+  const dueSoon = deadline && isDueSoon(deadline);
+
+  return (
+    <div className="modal-overlay" onClick={onClose}>
+      <div className="modal-backdrop"></div>
+      <div className="modal" onClick={e => e.stopPropagation()}>
+        <div className="modal-body">
+          <div className="modal-header">
+            <h2>{task ? 'Редактировать задачу' : 'Новая задача'}</h2>
+            <button className="modal-close" onClick={onClose}>✕</button>
+          </div>
+          <form onSubmit={handleSubmit}>
+            <div className="form-group">
+              <label>Название задачи *</label>
+              <input value={title} onChange={e => setTitle(e.target.value)} placeholder="Введите название..." required autoFocus />
+            </div>
+            <div className="form-group">
+              <label>Описание</label>
+              <textarea value={description} onChange={e => setDescription(e.target.value)} placeholder="Опишите задачу..." rows="3" />
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label>Статус</label>
+                <select value={status} onChange={e => setStatus(e.target.value)}>
+                  <option value="todo">📋 К выполнению</option>
+                  <option value="in_progress">🔄 В работе</option>
+                  <option value="review">🔍 На проверке</option>
+                  <option value="done">✅ Готово</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label>Приоритет</label>
+                <select value={priority} onChange={e => setPriority(e.target.value)}>
+                  <option value="low">🟢 Низкий</option>
+                  <option value="medium">🔵 Средний</option>
+                  <option value="high">🟠 Высокий</option>
+                  <option value="urgent">🔴 Срочный</option>
+                </select>
+              </div>
+            </div>
+            <div className="form-group">
+              <label>Исполнитель</label>
+              <select value={assignee} onChange={e => setAssignee(e.target.value)}>
+                <option value="">Не назначен</option>
+                {members.map(m => <option key={m.id} value={m.id}>{m.avatar} {m.name} ({m.role})</option>)}
+              </select>
+            </div>
+            <div className="form-group">
+              <label>Дедлайн</label>
+              <input type="date" value={deadline} onChange={e => setDeadline(e.target.value)} />
+              {deadline && (
+                <div className={`form-hint ${overdue ? 'color:#dc2626' : dueSoon ? 'color:#d97706' : 'color:#6b7280'}`}>
+                  {overdue ? '⚠️ Просрочено!' : dueSoon ? '⏰ Скоро дедлайн!' : '📅 В срок'}
+                </div>
+              )}
+            </div>
+            <div className="form-actions">
+              <button type="button" className="btn-cancel" onClick={onClose}>Отмена</button>
+              <button type="submit" className="btn-save">{task ? 'Сохранить' : 'Создать'}</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+</script>
+</body>
+</html>
