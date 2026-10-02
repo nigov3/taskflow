@@ -198,7 +198,7 @@ const { useState, useEffect, useMemo, useRef } = React;
    ===================================================================== */
 const SUPABASE_URL = 'https://mtzemwarjzlzzkrhnoya.supabase.co';      // например: 'https://abcdefgh..co'
 const SUPABASE_KEY = 'sb_publishable_sc93NhYZ_BbWdyEa3XHphw_GbFZNYif';      // anon public key из Settings -> API
-const useSupabase = !!(window.supabase && SUPABASE_URL !== 'https://kuprepaapdmtmdzrhrsr.supabase.co' && SUPABASE_KEY !== 'sb_publishable_Cq96flz1UZC-Yb371EcMDg_EMsgaItz'
+const useSupabase = !!(window.supabase && SUPABASE_URL !== 'https://mtzemwarjzlzzkrhnoya.supabase.co' && SUPABASE_KEY !== 'sb_publishable_sc93NhYZ_BbWdyEa3XHphw_GbFZNYif'
                        && /^https:\/\/.+/i.test(SUPABASE_URL));
 const sb = useSupabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
 
