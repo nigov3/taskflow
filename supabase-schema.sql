@@ -14,39 +14,9 @@
 create table if not exists public.profiles (
   id uuid primary key references auth.users (id) on delete cascade,
   name text not null default 'Участник',
-  -- pending: доступ ещё не выдан (приложение закрыто «на замок»);
-  -- member/editor/owner — обычные рабочие роли.
-  role text not null default 'pending' check (role in ('owner', 'editor', 'member', 'pending')),
+  role text not null default 'member' check (role in ('owner', 'editor', 'member')),
   created_at timestamptz not null default now()
 );
-
--- Колонка email (для отображения в панели доступа) + триггер, который
--- заполняет её автоматически при регистрации нового аккаунта.
-alter table public.profiles add column if not exists email text;
-
-create or replace function public.handle_new_user()
-returns trigger
-language plpgsql security definer set search_path = ''
-as $$
-begin
-  insert into public.profiles (id, name, email, role)
-  values (
-    new.id,
-    coalesce(nullif(new.raw_user_meta_data ->> 'name', ''), split_part(new.email, '@', 1)),
-    new.email,
-    -- Первый человек становится владельцем сразу на сервере (в обход RLS),
-    -- все остальные попадают в очередь «ожидает доступа» (pending).
-    case when not exists (select 1 from public.profiles where role = 'owner')
-         then 'owner' else 'pending' end
-  );
-  return new;
-end;
-$$;
-
-drop trigger if exists on_auth_user_created on auth.users;
-create trigger on_auth_user_created
-  after insert on auth.users
-  for each row execute function public.handle_new_user();
 
 -- 2. Общая таблица состояния приложения (списки задач и сотрудников)
 create table if not exists public.app_state (
@@ -59,10 +29,10 @@ create table if not exists public.app_state (
 alter table public.profiles enable row level security;
 alter table public.app_state enable row level security;
 
--- 4. Функции проверки прав (используются в политиках ниже)
+-- 4. Функция: текущий пользователь — владелец?
 create or replace function public.is_owner()
 returns boolean
-language sql stable security definer set search_path = ''
+language sql stable
 as $$
   select exists (
     select 1 from public.profiles
@@ -70,40 +40,29 @@ as $$
   );
 $$;
 
--- Пользователь получил доступ (владелец / редактор / сотрудник)?
--- Профиль ещё не создан или висит в статусе pending — доступа нет.
-create or replace function public.is_approved()
-returns boolean
-language sql stable security definer set search_path = ''
-as $$
-  select exists (
-    select 1 from public.profiles
-    where id = auth.uid() and role in ('owner', 'editor', 'member')
-  );
-$$;
-
 -- 5. ПРОФИЛИ -----------------------------------------------------------
--- Свой профиль человек видеть может всегда (в т.ч. в статусе pending —
--- иначе приложение не поймёт, что он «в очереди»). Чужие профили видят
--- только одобренные пользователи (нужно владельцу для панели доступа).
+-- Видеть списки профилей могут только вошедшие пользователи.
 drop policy if exists "profiles_select" on public.profiles;
 create policy "profiles_select" on public.profiles
   for select to authenticated
-  using (id = auth.uid() or public.is_owner());
+  using (true);
 
--- Самостоятельное создание профиля запрещено: его создаёт серверный
--- триггер при регистрации (см. пункт 1). Обмануть роль нельзя.
+-- Создать профиль можно только ДЛЯ СЕБЯ. Первый участник может стать
+-- владельцем (если владельцев ещё нет), остальные — только сотрудниками.
 drop policy if exists "profiles_insert_self" on public.profiles;
 create policy "profiles_insert_self" on public.profiles
   for insert to authenticated
-  with check (false);
+  with check (
+    id = auth.uid()
+    and (role = 'member' or not exists (select 1 from public.profiles where role = 'owner'))
+  );
 
--- Обновлять профили может только владелец. Он НЕ может понизить собственную
--- роль (чтобы случайно не запереть себя вне приложения).
+-- Обновлять профили может только владелец. При этом он НЕ может передать
+-- владство случайно всем сразу и не может изменить собственный id.
 drop policy if exists "profiles_update_owner" on public.profiles;
 create policy "profiles_update_owner" on public.profiles
   for update to authenticated
-  using (public.is_owner() and id <> auth.uid())
+  using (public.is_owner())
   with check (public.is_owner());
 
 -- Удалять профили — только владельцу (кроме самого себя).
@@ -113,13 +72,11 @@ create policy "profiles_delete_owner" on public.profiles
   using (public.is_owner() and id <> auth.uid());
 
 -- 6. СОСТОЯНИЕ ПРИЛОЖЕНИЯ (задачи и команда) --------------------------
--- Читать могут ТОЛЬКО одобренные пользователи. Незарегистрированные и
--- те, кому доступ ещё не выдан (pending), получают пустой ответ — данные
--- не покидают сервер.
+-- Читать могут все вошедшие.
 drop policy if exists "state_select" on public.app_state;
 create policy "state_select" on public.app_state
   for select to authenticated
-  using (public.is_approved());
+  using (true);
 
 -- Писать (создавать/обновлять) могут только владелец и редакторы.
 drop policy if exists "state_write" on public.app_state;
@@ -148,22 +105,20 @@ create policy "state_delete" on public.app_state
   for delete to authenticated
   using (public.is_owner());
 
--- 7. ВЛАДЕЛЕЦ -----------------------------------------------------------
--- Владелец назначается автоматически: первый зарегистрированный человек
--- становится им на уровне серверного триггера (пункт 1). Никто больше не
--- сможет стать владельцем через саморегистрацию — только текущий владелец
--- повысит человека ролью «Владелец» в панели «Доступ к приложению».
+-- 7. НАЗНАЧЕНИЕ ВЛАДЕЛЬЦА ----------------------------------------------
+-- Первый зарегистрированный пользователь становится владельцем автоматически.
+-- Выполните этот запрос ОДИН раз после первой регистрации, либо вручную
+-- назначьте владельца SQL-командой:
 --
--- Если хотите назначить владельца вручную (например, регистратор-бот уже
--- создал аккаунт раньше вас), выполните один раз:
+--   update public.profiles set role = 'owner' where email_ниже;
+--
+-- Проще всего так (замените you@example.com на свой email):
 --
 --   update public.profiles
 --   set role = 'owner'
 --   where id = (select id from auth.users where email = 'you@example.com');
+--
+-- Дальше менять роли можно прямо из интерфейса TaskFlow (панель «Команда»).
 
 -- 8. Реальное время: включаем публикацию изменений для подписок клиента
 alter publication supabase_realtime add table public.app_state;
-
--- 9. ВАЖНО: отключите «Confirm email» в Supabase (Authentication -> Providers
---    -> Email), иначе новый аккаунт появится только после подтверждения почты,
---    а одобрить его владелец сможет только после этого входа.
