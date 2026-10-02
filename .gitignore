@@ -1,1 +1,4 @@
-(empty)
+node_modules/
+package.json
+package-lock.json
+smoke-test.js

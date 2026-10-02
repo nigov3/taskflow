@@ -8,7 +8,8 @@
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
 <!-- Supabase: готовая авторизация + общая база данных. Работает и без него (локальный режим). -->
-<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"
+        onerror="window.__sbLoadFailed=true;console.warn('Не удалось загрузить библиотеку supabase-js из CDN — приложение продолжит работу в локальном режиме.')"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #f8fafc, #fff, #eef2ff); color: #111827; min-height: 100vh; }
@@ -200,7 +201,15 @@ const SUPABASE_URL = 'XXX';      // например: 'https://abcdefgh.supabase
 const SUPABASE_KEY = 'XXX';      // anon public key из Settings -> API
 const useSupabase = !!(window.supabase && SUPABASE_URL !== 'XXX' && SUPABASE_KEY !== 'XXX'
                        && /^https:\/\/.+/i.test(SUPABASE_URL));
-const sb = useSupabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+let sb = null;
+if (useSupabase) {
+  try { sb = window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY); }
+  catch (e) { console.error('Не удалось создать клиент Supabase:', e); }
+}
+// Если в URL/KEY случайно вставили не то (например, весь объект из «Connect») —
+// показываем понятную подсказку вместо бесконечной загрузки.
+const sbConfigBroken = !window.__sbLoadFailed && !useSupabase
+  && (SUPABASE_URL !== 'XXX' || SUPABASE_KEY !== 'XXX');
 
 // Загрузка/сохранение общих данных (tasks, members) с деградацией:
 // есть Supabase — работаем с общей базой; нет — с localStorage.
@@ -583,6 +592,7 @@ function App() {
             {stats.overdue > 0 && <div className="stat"><span className="stat-dot" style={{background:'#ef4444'}}></span><span style={{color:'#dc2626'}}>Просрочено: <b>{stats.overdue}</b></span></div>}
           </div>
           <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+            {useSupabase && !sbReady && <span className="user-badge">⏳ Подключение…</span>}
             {loggedIn ? (
               <span className="user-badge">{isOwner ? '🛡️' : '👤'} {displayName}{isOwner ? ' (владелец)' : ''}</span>
             ) : null}
@@ -597,8 +607,10 @@ function App() {
         </div>
       </div>
 
-      {/* Доступ не выдан (режим Supabase): человек вошёл, но владелец ещё не одобрил */}
-      {useSupabase && sbReady && sbUser && !approved && (
+      {/* Доступ не выдан (режим Supabase): человек вошёл, но владелец ещё не одобрил.
+          Если сессии нет — этот же экран служит «входной дверью»: посторонние видят
+          только его и не могут посмотреть ни задачи, ни состав команды. */}
+      {useSupabase && sbReady && !approved && (
         <div className="modal-overlay" style={{zIndex: 70}}>
           <div className="modal-backdrop"></div>
           <div className="modal" style={{maxWidth:'420px', position:'relative', zIndex:70}}>
@@ -613,8 +625,33 @@ function App() {
               {isPending ? (
                 <button className="btn-secondary" onClick={logout}>Выйти</button>
               ) : (
-                <button className="btn-primary" onClick={() => { setLoginError(''); setAuthMode('login'); setLoginOpen(true); }}>🔐 Войти / зарегистрироваться</button>
+                <button className="btn-primary" style={{margin:'0 auto'}} onClick={() => { setLoginError(''); setAuthMode(sbUser ? 'login' : 'login'); setLoginOpen(true); }}>🔐 Войти / зарегистрироваться</button>
               )}
+              {sbUser && !approved && (
+                <div style={{marginTop:'10px'}}>
+                  <button className="btn-cancel" onClick={logout}>Выйти из аккаунта {sbUser.email}</button>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Неверно вставлены SUPABASE_URL / SUPABASE_KEY — объясняем, что делать */}
+      {sbConfigBroken && (
+        <div className="modal-overlay" style={{zIndex: 75}}>
+          <div className="modal-backdrop"></div>
+          <div className="modal" style={{maxWidth:'460px', position:'relative', zIndex:75}}>
+            <div className="modal-body">
+              <div style={{fontSize:'40px', marginBottom:'10px', textAlign:'center'}}>⚠️</div>
+              <h2 style={{marginBottom:'8px', textAlign:'center'}}>Ошибка настройки Supabase</h2>
+              <p style={{color:'#6b7280', fontSize:'14px'}}>
+                В начале файла index.html заполнены строки <code>SUPABASE_URL</code> / <code>SUPABASE_KEY</code>,
+                но значение <b>SUPABASE_URL</b> не похоже на адрес проекта.<br/><br/>
+                Нужно вставить два значения из Supabase: вкладка <b>Connect</b> → раздел <b>Data API</b> → <b>URL</b>
+                (вида <code>https://xxxxxxxx.supabase.co</code>) и <b>anons key public</b>.<br/><br/>
+                Сейчас приложение работает в локальном режиме.
+              </p>
             </div>
           </div>
         </div>
