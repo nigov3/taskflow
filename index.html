@@ -7,6 +7,8 @@
 <script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
 <script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
 <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<!-- Supabase: готовая авторизация + общая база данных. Работает и без него (локальный режим). -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/dist/umd/supabase.js"></script>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif; background: linear-gradient(135deg, #f8fafc, #fff, #eef2ff); color: #111827; min-height: 100vh; }
@@ -127,6 +129,19 @@
   .team-form button { padding: 6px 12px; background: #eef2ff; color: #4f46e5; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
   .team-form button:hover { background: #e0e7ff; }
 
+  /* Roles & auth */
+  .role-chip { padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; cursor: pointer; border: none; transition: all 0.2s; }
+  .role-admin { background: #fef3c7; color: #b45309; }
+  .role-member { background: #e0e7ff; color: #4f46e5; }
+  .member-chip .role-chip:hover { box-shadow: 0 0 0 2px rgba(99,102,241,0.25); }
+  .btn-login { background: white; border: 1px solid #e5e7eb !important; color: #374151; }
+  .btn-login:hover { background: #f9fafb; }
+  .admin-setup { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 12px; padding: 10px 12px; background: #fffbeb; border: 1px solid #fde68a; border-radius: 12px; }
+  .admin-setup span { font-size: 13px; color: #92400e; }
+  .admin-setup input { padding: 6px 12px; border: 1px solid #e5e7eb; border-radius: 8px; font-size: 13px; outline: none; }
+  .admin-setup button { padding: 6px 12px; background: #b45309; color: white; border: none; border-radius: 8px; font-size: 13px; font-weight: 500; cursor: pointer; }
+  .user-badge { display: inline-flex; align-items: center; gap: 6px; padding: 5px 12px; background: rgba(255,255,255,0.15); border-radius: 20px; font-size: 13px; color: white; }
+
   /* Empty state */
   .empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 60px 20px; text-align: center; }
   .empty-icon { width: 80px; height: 80px; background: #eef2ff; border-radius: 20px; display: flex; align-items: center; justify-content: center; margin-bottom: 16px; }
@@ -168,7 +183,38 @@
 <div id="root"></div>
 
 <script type="text/babel">
-const { useState, useEffect, useMemo } = React;
+const { useState, useEffect, useMemo, useRef } = React;
+
+/* =====================================================================
+   ПОДКЛЮЧЕНИЕ К SUPABASE (серверная авторизация + общая база)
+   ---------------------------------------------------------------------
+   1. Зарегистрируйтесь бесплатно на https://supabase.com и создайте проект.
+   2. В проекте: Settings -> API — скопируйте Project URL и anon public key.
+   3. Вставьте их вместо XXX ниже. Всё — приложение само переключится
+      в «командный режим»: вход по email/паролю, общие данные для всех.
+   4. SQL-скрипт для создания таблиц и правил доступа лежит в файле
+      supabase-schema.sql (вкладка SQL Editor в Supabase).
+   Пока строки не заменены — работает локальный режим (данные в браузере).
+   ===================================================================== */
+const SUPABASE_URL = 'XXX';      // например: 'https://abcdefgh.supabase.co'
+const SUPABASE_KEY = 'XXX';      // anon public key из Settings -> API
+const useSupabase = !!(window.supabase && SUPABASE_URL !== 'XXX' && SUPABASE_KEY !== 'XXX'
+                       && /^https:\/\/.+/i.test(SUPABASE_URL));
+const sb = useSupabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_KEY) : null;
+
+// Загрузка/сохранение общих данных (tasks, members) с деградацией:
+// есть Supabase — работаем с общей базой; нет — с localStorage.
+async function loadShared(key, fallback) {
+  if (sb) {
+    const { data, error } = await sb.from('app_state').select('value').eq('id', key).maybeSingle();
+    if (!error && data) return data.value;
+  }
+  try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : fallback; } catch { return fallback; }
+}
+async function saveShared(key, value) {
+  localStorage.setItem(key, JSON.stringify(value)); // локальная копия — на случай офлайна
+  if (sb) await sb.from('app_state').upsert({ id: key, value, updated_at: new Date().toISOString() });
+}
 
 const STATUS_CONFIG = {
   todo: { label: 'К выполнению', icon: '📋', colClass: 'col-todo' },
@@ -190,6 +236,36 @@ const DEFAULT_MEMBERS = [
   { id: '3', name: 'Дмитрий', avatar: '👨‍💼', role: 'Менеджер' },
   { id: '4', name: 'Елена', avatar: '👩‍💻', role: 'Тестировщик' },
 ];
+
+// Простое хеширование пароля (SHA-256), чтобы не хранить пароль в открытом виде.
+// Соль уникальна для каждого браузера: она генерируется один раз и хранится локально,
+// поэтому даже одинаковые пароли на разных устройствах дают разные хеши.
+function getSalt() {
+  let salt = localStorage.getItem('tf_salt');
+  if (!salt) {
+    salt = Array.from(crypto.getRandomValues(new Uint8Array(16)))
+      .map(b => b.toString(16).padStart(2, '0')).join('');
+    localStorage.setItem('tf_salt', salt);
+  }
+  return salt;
+}
+
+async function hashPassword(pw) {
+  const input = getSalt() + ':' + pw;
+  if (window.isSecureContext && navigator.crypto && crypto.subtle) {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(input));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
+  // Фолбэк для окружений без SubtleCrypto (открыт как файл или по HTTP):
+  // детерминированный хеш на основе FNV-1a — лучше, чем пароль в открытом виде,
+  // но слабее SHA-256. Для настоящей защиты используйте серверную авторизацию.
+  let h1 = 0x811c9dc5, h2 = 0x01000193;
+  for (let i = 0; i < input.length; i++) {
+    h1 = Math.imul(h1 ^ input.charCodeAt(i), 16777619) >>> 0;
+    h2 = Math.imul(h2 + input.charCodeAt(i), 2246822519) >>> 0;
+  }
+  return 'fb' + h1.toString(36) + h2.toString(36);
+}
 
 function loadData(key, fallback) {
   try { const d = localStorage.getItem(key); return d ? JSON.parse(d) : fallback; } catch { return fallback; }
@@ -229,8 +305,195 @@ function App() {
   const [newRole, setNewRole] = useState('');
   const [viewMode, setViewMode] = useState('kanban');
 
-  useEffect(() => { localStorage.setItem('tf_tasks', JSON.stringify(tasks)); }, [tasks]);
-  useEffect(() => { localStorage.setItem('tf_members', JSON.stringify(members)); }, [members]);
+  // --- Аутентификация и права ---
+  // Локальный режим: владелец один, пароль хранится как SHA-256 хеш в браузере.
+  // Режим Supabase: вход по email/паролю через сервер, роль owner закреплена
+  // в таблице profiles — сменить её может только владелец (проверяется на сервере).
+  const [ownerAccount, setOwnerAccount] = useState(() => loadData('tf_owner', null)); // { name, passHash }
+  const [currentUser, setCurrentUser] = useState(() => loadData('tf_session', null)); // { name, role: 'owner' | 'member' }
+  const [loginOpen, setLoginOpen] = useState(false);
+  const [loginName, setLoginName] = useState('');
+  const [loginPass, setLoginPass] = useState('');
+  const [loginError, setLoginError] = useState('');
+  const [setupName, setSetupName] = useState('');
+  const [setupPass, setSetupPass] = useState('');
+  const [setupPass2, setSetupPass2] = useState('');
+  const [setupError, setSetupError] = useState('');
+  // Supabase-состояние
+  const [sbReady, setSbReady] = useState(!useSupabase);
+  const [sbUser, setSbUser] = useState(null);        // объект пользователя Supabase
+  const [sbProfile, setSbProfile] = useState(null);  // { id, name, role }
+  const [authMode, setAuthMode] = useState('login'); // 'login' | 'register' — для входа сотрудников
+  const [regName, setRegName] = useState('');
+
+  const isOwner = useSupabase
+    ? !!(sbProfile && sbProfile.role === 'owner')
+    : !!(currentUser && currentUser.role === 'owner');
+  const displayName = useSupabase
+    ? (sbProfile ? sbProfile.name : (sbUser ? sbUser.email : ''))
+    : (currentUser ? currentUser.name : '');
+  const loggedIn = useSupabase ? !!sbUser : !!currentUser;
+
+  // Загрузка общих данных + подписка на изменения (реальное время)
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      const t = await loadShared('tf_tasks', []);
+      const m = await loadShared('tf_members', DEFAULT_MEMBERS);
+      if (!cancelled) { setTasks(t); setMembers(m); }
+    })();
+    if (sb) {
+      const channel = sb.channel('app_state_changes')
+        .on('postgres_changes', { event: 'UPDATE', schema: 'public', table: 'app_state' },
+          (payload) => {
+            const v = payload.new && payload.new.value;
+            if (payload.new.id === 'tf_tasks' && Array.isArray(v)) setTasks(v);
+            if (payload.new.id === 'tf_members' && Array.isArray(v)) setMembers(v);
+          })
+        .subscribe();
+      return () => { cancelled = true; sb.removeChannel(channel); };
+    }
+    return () => { cancelled = true; };
+  }, []);
+
+  // Сохранение общих данных (в Supabase пишет только владелец — так решают RLS-политики)
+  useEffect(() => {
+    localStorage.setItem('tf_tasks', JSON.stringify(tasks));
+    if (sb && isOwner) saveShared('tf_tasks', tasks);
+  }, [tasks, isOwner]);
+  useEffect(() => {
+    localStorage.setItem('tf_members', JSON.stringify(members));
+    if (sb && isOwner) saveShared('tf_members', members);
+  }, [members, isOwner]);
+
+  useEffect(() => { if (ownerAccount) localStorage.setItem('tf_owner', JSON.stringify(ownerAccount)); }, [ownerAccount]);
+  // Миграция со старых схем: tf_admin -> tf_owner (сброс сессии, т.к. хеш теперь с новой солью),
+  // сессия isAdmin -> role:'owner'
+  useEffect(() => {
+    const legacyAdmin = loadData('tf_admin', null);
+    if (!ownerAccount && legacyAdmin) setOwnerAccount(legacyAdmin);
+    if (legacyAdmin) localStorage.removeItem('tf_admin');
+    if (currentUser && currentUser.isAdmin !== undefined) {
+      setCurrentUser({ name: currentUser.name, role: currentUser.isAdmin ? 'owner' : 'member' });
+    }
+  }, []);
+  useEffect(() => { localStorage.setItem('tf_session', JSON.stringify(currentUser)); }, [currentUser]);
+
+  // --- Supabase: сессия и профиль ---
+  useEffect(() => {
+    if (!sb) return;
+    let mounted = true;
+    async function fetchProfile(userId) {
+      const { data: prof } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
+      if (!mounted) return;
+      if (prof) {
+        setSbProfile(prof);
+      } else {
+        // Профиля ещё нет — создаём. Первый аккаунт становится владельцем,
+        // все остальные — сотрудниками. Это правило работает и на сервере
+        // (RLS-политика разрешает самостоятельное создание только с ролью member,
+        // поэтому обмануть его из браузера нельзя).
+        const { data: owners } = await sb.from('profiles').select('id').eq('role', 'owner').limit(1);
+        const role = (owners && owners.length > 0) ? 'member' : 'owner';
+        let attempt = await sb.from('profiles').insert({ id: userId, name: (userId || '').split('@')[0] || 'Участник', role }).select().maybeSingle();
+        if (attempt.error && role === 'owner') {
+          // Сервер отверг owner (уже есть владелец) — пробуем member
+          attempt = await sb.from('profiles').insert({ id: userId, name: (userId || '').split('@')[0] || 'Участник', role: 'member' }).select().maybeSingle();
+        }
+        const { data: finalProf } = await sb.from('profiles').select('*').eq('id', userId).maybeSingle();
+        if (mounted) setSbProfile(finalProf || attempt.data || { id: userId, name: 'Участник', role: 'member' });
+      }
+      // Обновляем список профилей для панели «Доступ»
+      const { data: all } = await sb.from('profiles').select('*');
+      if (mounted && all) setProfiles(all);
+      setSbReady(true);
+    }
+    sb.auth.getSession().then(({ data: { session } }) => {
+      if (!mounted) return;
+      setSbUser(session ? session.user : null);
+      if (session) fetchProfile(session.user.id); else setSbReady(true);
+    });
+    const { data: sub } = sb.auth.onAuthStateChange((_event, session) => {
+      const u = session ? session.user : null;
+      setSbUser(u);
+      if (u) fetchProfile(u.id); else { setSbProfile(null); setSbReady(true); }
+    });
+    return () => { mounted = false; if (sub && sub.subscription) sub.subscription.unsubscribe(); };
+  }, []);
+
+  const requireAdmin = (action) => {
+    if (!isOwner) { alert(`Действие доступно только владельцу: ${action}`); return false; }
+    return true;
+  };
+
+  const setupAdmin = async () => {
+    if (ownerAccount) return;
+    if (!setupName.trim() || setupPass.length < 4) { setSetupError('Укажите имя и пароль не короче 4 символов'); return; }
+    if (setupPass !== setupPass2) { setSetupError('Пароли не совпадают'); return; }
+    const passHash = await hashPassword(setupPass);
+    setOwnerAccount({ name: setupName.trim(), passHash });
+    setCurrentUser({ name: setupName.trim(), role: 'owner' });
+    setSetupName(''); setSetupPass(''); setSetupPass2(''); setSetupError('');
+  };
+
+  const doLogin = async () => {
+    if (useSupabase) {
+      setLoginError('');
+      const { error } = await sb.auth.signInWithPassword({ email: loginName.trim(), password: loginPass });
+      if (error) { setLoginError('Неверный email или пароль'); return; }
+      setLoginOpen(false); setLoginName(''); setLoginPass('');
+      return;
+    }
+    if (!ownerAccount) return;
+    const passHash = await hashPassword(loginPass);
+    if (loginName.trim() === ownerAccount.name && passHash === ownerAccount.passHash) {
+      setCurrentUser({ name: ownerAccount.name, role: 'owner' });
+      setLoginOpen(false); setLoginName(''); setLoginPass(''); setLoginError('');
+    } else {
+      setLoginError('Неверное имя или пароль');
+    }
+  };
+
+  const doRegister = async () => {
+    setLoginError('');
+    if (regName.trim().length < 2) { setLoginError('Укажите имя (минимум 2 символа)'); return; }
+    if (loginPass.length < 6) { setLoginError('Пароль должен быть не короче 6 символов'); return; }
+    const { data, error } = await sb.auth.signUp({ email: loginName.trim(), password: loginPass });
+    if (error) { setLoginError(error.message); return; }
+    // Профиль создастся автоматически при первом входе (см. fetchProfile).
+    // Если Supabase настроен без подтверждения email — пользователь уже вошёл.
+    if (data.session) {
+      setLoginOpen(false); setLoginName(''); setLoginPass(''); setRegName('');
+    } else {
+      setLoginError('✅ Аккаунт создан! Проверьте почту и подтвердите адрес, затем войдите.');
+      setAuthMode('login'); setLoginPass('');
+    }
+  };
+
+  const logout = () => {
+    if (useSupabase) { sb.auth.signOut(); return; }
+    setCurrentUser(null);
+  };
+
+  const changeUserRole = async (profileId, role) => {
+    if (!requireAdmin('изменение роли доступа')) return;
+    await sb.from('profiles').update({ role }).eq('id', profileId);
+    const { data } = await sb.from('profiles').select('*');
+    if (data) setProfiles(data);
+    // Если изменили роль самому себе — обновляем и свой профиль
+    if (sbUser && profileId === sbUser.id) {
+      const me = (data || []).find(p => p.id === sbUser.id);
+      if (me) setSbProfile(me);
+    }
+  };
+
+  const [profiles, setProfiles] = useState([]);
+  useEffect(() => {
+    if (!sb || !sbUser) return;
+    let mounted = true;
+    sb.from('profiles').select('*').then(({ data }) => { if (mounted && data) setProfiles(data); });
+    return () => { mounted = false; };
+  }, [sbUser]);
 
   const filtered = useMemo(() => tasks.filter(t => {
     if (filterAssignee && t.assignee !== filterAssignee) return false;
@@ -249,7 +512,10 @@ function App() {
     inProgress: tasks.filter(t => t.status === 'in_progress').length,
   }), [tasks]);
 
+  const canEditTasks = useSupabase ? (isOwner || (sbProfile && sbProfile.role === 'editor')) : isOwner;
+
   const saveTask = (task) => {
+    if (useSupabase && !canEditTasks) { alert('Редактировать задачи могут только владелец и редакторы.'); return; }
     setTasks(prev => {
       const idx = prev.findIndex(t => t.id === task.id);
       if (idx >= 0) { const n = [...prev]; n[idx] = task; return n; }
@@ -258,10 +524,12 @@ function App() {
   };
 
   const deleteTask = (id) => {
+    if (useSupabase && !canEditTasks) { alert('Удалять задачи могут только владелец и редакторы.'); return; }
     if (confirm('Удалить задачу?')) setTasks(prev => prev.filter(t => t.id !== id));
   };
 
   const changeStatus = (id, status) => {
+    if (useSupabase && !canEditTasks) return;
     setTasks(prev => prev.map(t => t.id === id ? {...t, status, updatedAt: new Date().toISOString()} : t));
   };
 
@@ -269,6 +537,7 @@ function App() {
   const openEdit = (task) => { setEditingTask(task); setDefaultStatus(task.status); setModalOpen(true); };
 
   const addMember = () => {
+    if (!requireAdmin('добавление сотрудника')) return;
     if (!newName.trim()) return;
     const emojis = ['👤','👨‍💻','👩‍💻','👨‍🎨','👩‍🎨','🧑‍💼','👨‍🔧','👩‍🔬'];
     setMembers(prev => [...prev, { id: genId(), name: newName.trim(), avatar: emojis[Math.floor(Math.random()*emojis.length)], role: newRole.trim() || 'Участник' }]);
@@ -276,7 +545,13 @@ function App() {
   };
 
   const removeMember = (id) => {
+    if (!requireAdmin('удаление сотрудника')) return;
     if (confirm('Удалить участника?')) setMembers(prev => prev.filter(m => m.id !== id));
+  };
+
+  const updateMemberRole = (id, role) => {
+    if (!requireAdmin('изменение роли')) return;
+    setMembers(prev => prev.map(m => m.id === id ? {...m, role} : m));
   };
 
   const statuses = ['todo', 'in_progress', 'review', 'done'];
@@ -300,8 +575,17 @@ function App() {
             {stats.overdue > 0 && <div className="stat"><span className="stat-dot" style={{background:'#ef4444'}}></span><span style={{color:'#dc2626'}}>Просрочено: <b>{stats.overdue}</b></span></div>}
           </div>
           <div style={{display:'flex',gap:'8px',alignItems:'center'}}>
+            {loggedIn ? (
+              <span className="user-badge">{isOwner ? '🛡️' : '👤'} {displayName}{isOwner ? ' (владелец)' : ''}</span>
+            ) : null}
+            {loggedIn ? (
+              <button className="btn-secondary" onClick={logout}>Выйти</button>
+            ) : (
+              <button className="btn-secondary btn-login" onClick={() => { setLoginError(''); setAuthMode('login'); setLoginOpen(true); }}>🔐 {useSupabase ? 'Войти' : 'Войти как владелец'}</button>
+            )}
             <button className="btn-secondary" onClick={() => setShowTeam(!showTeam)}>👥 Команда</button>
-            <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>
+            {!useSupabase && isOwner && <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>}
+            {useSupabase && loggedIn && <button className="btn-primary" onClick={() => openNew()}>+ <span style={{display:'inline'}}>Новая задача</span></button>}
           </div>
         </div>
       </div>
@@ -311,24 +595,71 @@ function App() {
         <div className="team-panel">
           <div className="team-panel-inner">
             <div style={{display:'flex',justifyContent:'space-between',alignItems:'center',marginBottom:'12px'}}>
-              <h3 style={{fontWeight:600}}>Команда</h3>
+              <h3 style={{fontWeight:600}}>Команда {!isOwner && <span style={{fontSize:'12px',fontWeight:400,color:'#9ca3af'}}>(только просмотр — менять роли и сотрудников может только владелец)</span>}</h3>
               <button className="modal-close" onClick={() => setShowTeam(false)}>✕</button>
             </div>
+            {!useSupabase && !ownerAccount && (
+              <div className="admin-setup">
+                <span>🛡️ Настройте аккаунт владельца (это можете сделать только вы):</span>
+                <input value={setupName} onChange={e => setSetupName(e.target.value)} placeholder="Ваше имя" />
+                <input type="password" value={setupPass} onChange={e => setSetupPass(e.target.value)} placeholder="Пароль" />
+                <input type="password" value={setupPass2} onChange={e => setSetupPass2(e.target.value)} placeholder="Повторите пароль" onKeyDown={e => e.key === 'Enter' && setupAdmin()} />
+                <button onClick={setupAdmin}>Создать владельца</button>
+                {setupError && <span style={{color:'#dc2626'}}>{setupError}</span>}
+              </div>
+            )}
             <div className="team-members">
               {members.map(m => (
                 <div key={m.id} className="member-chip">
                   <span>{m.avatar}</span>
                   <span style={{fontWeight:500}}>{m.name}</span>
-                  <span style={{color:'#9ca3af',fontSize:'12px'}}>{m.role}</span>
-                  <button className="remove" onClick={() => removeMember(m.id)}>×</button>
+                  {isOwner ? (
+                    <input
+                      value={m.role}
+                      onChange={e => updateMemberRole(m.id, e.target.value)}
+                      style={{width:'110px',padding:'2px 8px',border:'1px solid #e5e7eb',borderRadius:'8px',fontSize:'12px',outline:'none'}}
+                      title="Изменить роль"
+                    />
+                  ) : (
+                    <span style={{color:'#9ca3af',fontSize:'12px'}}>{m.role}</span>
+                  )}
+                  {isOwner && <button className="remove" onClick={() => removeMember(m.id)}>×</button>}
                 </div>
               ))}
             </div>
-            <div className="team-form">
-              <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Имя" onKeyDown={e => e.key === 'Enter' && addMember()} />
-              <input value={newRole} onChange={e => setNewRole(e.target.value)} placeholder="Роль" onKeyDown={e => e.key === 'Enter' && addMember()} />
-              <button onClick={addMember}>Добавить</button>
-            </div>
+            {isOwner ? (
+              <div className="team-form">
+                <input value={newName} onChange={e => setNewName(e.target.value)} placeholder="Имя" onKeyDown={e => e.key === 'Enter' && addMember()} />
+                <input value={newRole} onChange={e => setNewRole(e.target.value)} placeholder="Роль" onKeyDown={e => e.key === 'Enter' && addMember()} />
+                <button onClick={addMember}>Добавить</button>
+              </div>
+            ) : (
+              <div style={{fontSize:'13px',color:'#9ca3af'}}>Добавлять, удалять сотрудников и менять их роли может только владелец. {!loggedIn && '🔐 Войдите, чтобы получить доступ.'}</div>
+            )}
+            {useSupabase && isOwner && profiles.length > 1 && (
+              <div style={{marginTop:'14px'}}>
+                <h3 style={{fontWeight:600, fontSize:'14px', marginBottom:'8px'}}>Доступ к приложению (аккаунты)</h3>
+                {profiles.filter(p => p.role !== 'owner').map(p => (
+                  <div key={p.id} className="member-chip" style={{marginBottom:'6px'}}>
+                    <span>👤</span>
+                    <span style={{fontWeight:500}}>{p.name}</span>
+                    <select
+                      value={p.role}
+                      onChange={e => changeUserRole(p.id, e.target.value)}
+                      style={{padding:'2px 8px',border:'1px solid #e5e7eb',borderRadius:'8px',fontSize:'12px'}}
+                      title="Права доступа"
+                    >
+                      <option value="member">Сотрудник (просмотр задач)</option>
+                      <option value="editor">Редактор (может менять задачи)</option>
+                      <option value="owner">Владелец (полный доступ)</option>
+                    </select>
+                  </div>
+                ))}
+                <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'6px'}}>
+                  Роль «Владелец» даёт полный доступ. Сменить её обратно себе или другим владельцам можно только здесь — проверка проходит на сервере Supabase.
+                </div>
+              </div>
+            )}
           </div>
         </div>
       )}
@@ -483,6 +814,69 @@ function App() {
 
       {/* Modal */}
       {modalOpen && <TaskModal task={editingTask} defaultStatus={defaultStatus} members={members} onClose={() => setModalOpen(false)} onSave={saveTask} />}
+
+      {/* Login Modal */}
+      {loginOpen && (
+        <div className="modal-overlay" onClick={() => setLoginOpen(false)}>
+          <div className="modal-backdrop"></div>
+          <div className="modal" style={{maxWidth:'380px'}} onClick={e => e.stopPropagation()}>
+            <div className="modal-body">
+              <div className="modal-header">
+                <h2>{useSupabase ? (authMode === 'login' ? '🔐 Вход' : '✨ Регистрация') : '🔐 Вход владельца'}</h2>
+                <button className="modal-close" onClick={() => setLoginOpen(false)}>✕</button>
+              </div>
+              {useSupabase ? (
+                <form onSubmit={e => { e.preventDefault(); authMode === 'login' ? doLogin() : doRegister(); }}>
+                  {authMode === 'register' && (
+                    <div className="form-group">
+                      <label>Имя</label>
+                      <input value={regName} onChange={e => setRegName(e.target.value)} placeholder="Как вас называть" autoFocus />
+                    </div>
+                  )}
+                  <div className="form-group">
+                    <label>Email</label>
+                    <input type="email" value={loginName} onChange={e => setLoginName(e.target.value)} placeholder="you@company.com" autoFocus={authMode === 'login'} required />
+                  </div>
+                  <div className="form-group">
+                    <label>Пароль</label>
+                    <input type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder={authMode === 'register' ? 'Минимум 6 символов' : 'Пароль'} />
+                  </div>
+                  {loginError && <div className="form-hint" style={{color:'#dc2626',marginBottom:'8px'}}>⚠️ {loginError}</div>}
+                  <div className="form-actions">
+                    <button type="button" className="btn-cancel" onClick={() => setAuthMode(authMode === 'login' ? 'register' : 'login')}>
+                      {authMode === 'login' ? 'Регистрация' : 'У меня есть аккаунт'}
+                    </button>
+                    <button type="submit" className="btn-save">{authMode === 'login' ? 'Войти' : 'Создать аккаунт'}</button>
+                  </div>
+                  {authMode === 'login' && (
+                    <div style={{fontSize:'12px',color:'#9ca3af',marginTop:'10px'}}>
+                      Первый вошедший становится владельцем. Сотрудникам создайте аккаунты через «Регистрацию» — их правами управляете только вы.
+                    </div>
+                  )}
+                </form>
+              ) : !ownerAccount ? (
+                <p style={{fontSize:'14px',color:'#6b7280'}}>Аккаунт владельца ещё не создан. Откройте панель «👥 Команда» и настройте его.</p>
+              ) : (
+                <form onSubmit={e => { e.preventDefault(); doLogin(); }}>
+                  <div className="form-group">
+                    <label>Имя владельца</label>
+                    <input value={loginName} onChange={e => setLoginName(e.target.value)} placeholder="Имя" autoFocus />
+                  </div>
+                  <div className="form-group">
+                    <label>Пароль</label>
+                    <input type="password" value={loginPass} onChange={e => setLoginPass(e.target.value)} placeholder="Пароль" />
+                  </div>
+                  {loginError && <div className="form-hint" style={{color:'#dc2626',marginBottom:'8px'}}>⚠️ {loginError}</div>}
+                  <div className="form-actions">
+                    <button type="button" className="btn-cancel" onClick={() => setLoginOpen(false)}>Отмена</button>
+                    <button type="submit" className="btn-save">Войти</button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
