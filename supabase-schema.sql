@@ -25,6 +25,81 @@ create table if not exists public.app_state (
   updated_at timestamptz not null default now()
 );
 
+-- 2.1 Коды приглашений: доступ к приложению выдаёт только владелец.
+--     Регистрация без действительного кода невозможна — проверка идёт
+--     на сервере (триггер BEFORE INSERT, срабатывает ДО RLS-политик).
+create table if not exists public.invite_codes (
+  code text primary key,
+  created_by uuid references auth.users (id) on delete set null,
+  used_by uuid references auth.users (id) on delete set null,
+  used_at timestamptz,
+  created_at timestamptz not null default now()
+);
+
+alter table public.invite_codes enable row level security;
+
+-- Коды видит, создаёт и удаляет только владелец.
+drop policy if exists "invite_select_owner" on public.invite_codes;
+create policy "invite_select_owner" on public.invite_codes
+  for select to authenticated
+  using (public.is_owner());
+
+drop policy if exists "invite_insert_owner" on public.invite_codes;
+create policy "invite_insert_owner" on public.invite_codes
+  for insert to authenticated
+  with check (public.is_owner());
+
+drop policy if exists "invite_delete_owner" on public.invite_codes;
+create policy "invite_delete_owner" on public.invite_codes
+  for delete to authenticated
+  using (public.is_owner());
+
+-- Функция проверки кода приглашения (SECDEF: гость не может читать таблицу
+-- кодов напрямую, но триггер через неё проверить код может).
+create or replace function public.valid_invite_code(p_code text)
+returns boolean
+language plpgsql security definer
+stable
+set search_path = public
+as $$
+declare v_found boolean;
+begin
+  if p_code is null or btrim(p_code) = '' then return false; end if;
+  if public.is_owner() then return true; end if; -- владельцу код не нужен
+  select exists (
+    select 1 from public.invite_codes
+    where upper(code) = upper(btrim(p_code)) and used_by is null
+  ) into v_found;
+  return coalesce(v_found, false);
+end;
+$$;
+
+-- Триггер: при создании аккаунта проверяем код из meta_data и помечаем его использованным.
+-- Если кода нет/он неверный — регистрация отклоняется на уровне базы данных.
+create or replace function public.check_invite_on_signup()
+returns trigger
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare v_code text;
+begin
+  v_code := new.raw_user_meta_data ->> 'invite_code';
+  if not public.valid_invite_code(v_code) then
+    raise exception 'Неверный или отсутствующий код приглашения';
+  end if;
+  update public.invite_codes
+    set used_by = new.id, used_at = now()
+    where upper(code) = upper(btrim(v_code)) and used_by is null;
+  return new;
+end;
+$$;
+
+drop trigger if exists trg_check_invite on auth.users;
+create trigger trg_check_invite
+  before insert on auth.users
+  for each row execute function public.check_invite_on_signup();
+
 -- 3. Включаем Row Level Security: сервер сам решает, кому что разрешено
 alter table public.profiles enable row level security;
 alter table public.app_state enable row level security;
@@ -122,3 +197,14 @@ create policy "state_delete" on public.app_state
 
 -- 8. Реальное время: включаем публикацию изменений для подписок клиента
 alter publication supabase_realtime add table public.app_state;
+
+-- 9. ВАЖНО ПРО КОДЫ ПРИГЛАШЕНИЙ
+-- Регистрация новых аккаунтов без действительного кода невозможна:
+-- триггер trg_check_invite отклоняет вставку в auth.users.
+-- Владелец создаёт коды прямо в интерфейсе TaskFlow
+-- («👥 Команда → Коды приглашений»). Каждый код — одноразовый.
+--
+-- Если вы уже зарегистрировались ДО применения этого скрипта и хотите
+-- создать первый аккаунт заново с нуля, выполните (по желанию):
+--   delete from auth.users where email = 'you@example.com';
+-- либо просто войдите существующим аккаунтом — владельцу код не требуется.
