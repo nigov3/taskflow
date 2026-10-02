@@ -181,7 +181,27 @@
 </style>
 </head>
 <body>
-<div id="root"></div>
+<noscript><div style="padding:40px;font-family:sans-serif;text-align:center">Для работы TaskFlow нужно включить JavaScript в браузере.</div></noscript>
+<div id="root"><div style="padding:60px;text-align:center;color:#6b7280;font-family:sans-serif">Загрузка…</div></div>
+
+<!-- Индикатор ошибок: если код не смог выполниться, показываем причину вместо белой страницы -->
+<div id="boot-error" style="display:none;position:fixed;inset:auto 16px 16px 16px;background:#fef2f2;border:1px solid #fecaca;color:#991b1b;padding:14px 18px;border-radius:12px;font-family:monospace;font-size:13px;max-height:40vh;overflow:auto;z-index:9999"></div>
+<script>
+window.addEventListener('error', function (e) {
+  var box = document.getElementById('boot-error');
+  if (box && e.message) { box.style.display = 'block'; box.textContent = 'Ошибка загрузки: ' + e.message + ' (' + (e.filename||'') + ':' + (e.lineno||'?') + ')'; }
+});
+// Если через 8 секунд приложение так и не отрисовалось — скорее всего не загрузились React/Babel из CDN.
+setTimeout(function () {
+  var root = document.getElementById('root');
+  if (root && (!root.firstChild || (root.getAttribute('data-booted') !== '1'))) {
+    var box = document.getElementById('boot-error');
+    if (box) { box.style.display = 'block';
+      box.innerHTML = 'Приложение не запустилось: вероятно, браузеру не удалось загрузить библиотеки React/Babel из интернета (unpkg.com). ' +
+        'Проверьте подключение к сети и откройте страницу заново (Ctrl+Shift+R). Подробности — во вкладке Console инструментов разработчика (F12).'; }
+  }
+}, 8000);
+</script>
 
 <script type="text/babel">
 const { useState, useEffect, useMemo, useRef } = React;
@@ -1055,7 +1075,10 @@ function TaskModal({ task, defaultStatus, members, onClose, onSave }) {
   );
 }
 
-ReactDOM.createRoot(document.getElementById('root')).render(<App />);
+const __rootEl = document.getElementById('root');
+__rootEl.setAttribute('data-booted', '1');
+__rootEl.innerHTML = '';
+ReactDOM.createRoot(__rootEl).render(<App />);
 </script>
 </body>
 </html>
